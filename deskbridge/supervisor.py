@@ -47,23 +47,30 @@ class Supervisor:
                     identities=self._config.identities,
                 )
 
-                if threading.current_thread() is threading.main_thread():
+                is_main = threading.current_thread() is threading.main_thread()
+                if is_main:
                     loop = asyncio.get_running_loop()
                     for sig in (signal.SIGTERM, signal.SIGINT):
                         loop.add_signal_handler(sig, self.request_shutdown)
 
-                await broker.unlock_all()
-                log.info("supervisor_started")
+                try:
+                    await broker.unlock_all()
+                    log.info("supervisor_started")
 
-                interval = self._config.supervisor.heartbeat_interval_secs
-                while not self._shutdown_event.is_set():
-                    await broker.refresh_if_needed()
-                    try:
-                        await asyncio.wait_for(
-                            self._shutdown_event.wait(),
-                            timeout=float(interval),
-                        )
-                    except asyncio.TimeoutError:
-                        pass
+                    interval = self._config.supervisor.heartbeat_interval_secs
+                    while not self._shutdown_event.is_set():
+                        await broker.refresh_if_needed()
+                        try:
+                            await asyncio.wait_for(
+                                self._shutdown_event.wait(),
+                                timeout=float(interval),
+                            )
+                        except asyncio.TimeoutError:
+                            pass
 
-                log.info("supervisor_stopped")
+                    log.info("supervisor_stopped")
+                finally:
+                    if is_main:
+                        loop = asyncio.get_running_loop()
+                        for sig in (signal.SIGTERM, signal.SIGINT):
+                            loop.remove_signal_handler(sig)
