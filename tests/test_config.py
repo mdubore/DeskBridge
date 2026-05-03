@@ -100,3 +100,13 @@ def test_passphrase_ref_keyring_bad_format_raises():
     )
     with pytest.raises(ConfigError, match="expected keyring:service:key"):
         identity.resolve_passphrase()
+
+
+def test_empty_identities_raises(tmp_path):
+    from deskbridge.config import SupervisorConfig, McpConfig
+    with pytest.raises(ValueError, match="at least one"):
+        DeskBridgeConfig(
+            supervisor=SupervisorConfig(db_path="/tmp/test.db"),
+            mcp=McpConfig(command="nostrdesk-mcp"),
+            identities=[]
+        )
