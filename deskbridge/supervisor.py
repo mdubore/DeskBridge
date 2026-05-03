@@ -71,6 +71,5 @@ class Supervisor:
                     log.info("supervisor_stopped")
                 finally:
                     if is_main:
-                        loop = asyncio.get_running_loop()
                         for sig in (signal.SIGTERM, signal.SIGINT):
                             loop.remove_signal_handler(sig)

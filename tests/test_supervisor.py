@@ -2,7 +2,6 @@ import asyncio
 import pytest
 import aiosqlite
 from unittest.mock import AsyncMock, MagicMock, patch
-from contextlib import contextmanager
 from deskbridge.supervisor import Supervisor
 from deskbridge.config import DeskBridgeConfig, SupervisorConfig, McpConfig, IdentityConfig
 
