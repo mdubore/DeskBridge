@@ -1,0 +1,30 @@
+# DeskBridge configuration — copy to ~/.deskbridge/config.toml and edit
+
+[supervisor]
+db_path = "~/.deskbridge/state.db"
+log_level = "INFO"
+heartbeat_interval_secs = 60
+
+[mcp]
+# Command used to spawn the nostrdesk-mcp process
+command = "nostrdesk-mcp"
+args = []
+startup_timeout_secs = 30
+
+[[identities]]
+label = "alice"
+npub = "npub1examplealice000000000000000000000000000000000000000000000000"
+# passphrase_ref formats:
+#   env:VAR_NAME        — read from environment variable
+#   keyring:service:key — read from OS keychain
+passphrase_ref = "env:ALICE_PASSPHRASE"
+
+[[projects]]
+id = "proj-myproject"
+name = "MyProject"
+repo_path = "~/code/myproject"
+identity = "alice"
+agents = ["codex", "claude-code"]
+# npub of the human to DM with progress/approvals
+escalation_dm_target = "npub1examplehuman000000000000000000000000000000000000000000000000"
+allowed_autonomous_actions = ["read", "send_dm", "update_task_status"]

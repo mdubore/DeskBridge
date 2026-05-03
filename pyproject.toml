@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deskbridge"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "aiosqlite>=0.20",
+    "mcp>=1.0",
+    "structlog>=24.0",
+    "click>=8.0",
+    "keyring>=25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+deskbridge = "deskbridge.cli:cli"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
