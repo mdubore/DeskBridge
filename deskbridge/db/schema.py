@@ -135,10 +135,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 
 async def apply_schema(conn: aiosqlite.Connection) -> None:
+    await conn.execute("PRAGMA foreign_keys = ON")
     await conn.executescript(_DDL)
-    row = await (await conn.execute("SELECT COUNT(*) FROM schema_version")).fetchone()
+    async with conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
+        row = await cur.fetchone()
     if row[0] == 0:
         await conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
         )
-    await conn.commit()
+        await conn.commit()

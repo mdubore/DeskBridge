@@ -31,7 +31,9 @@ async def test_apply_schema_is_idempotent(tmp_path):
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
         rows = await cursor.fetchall()
-    assert len(rows) >= len(TABLE_NAMES)
+    existing = {row[0] for row in rows}
+    for name in TABLE_NAMES:
+        assert name in existing, f"Missing table after second apply: {name}"
 
 
 async def test_schema_version_stored(db):
@@ -52,3 +54,12 @@ async def test_cursors_has_required_columns(db):
     cols = {row[1] for row in await cursor.fetchall()}
     assert {"id", "cursor_type", "identity_id", "last_entity_id",
             "last_created_at", "last_imported_at", "raw_json", "updated_at"} <= cols
+
+
+async def test_foreign_keys_enforced(db):
+    with pytest.raises(aiosqlite.IntegrityError):
+        await db.execute(
+            "INSERT INTO projects (id, name, repo_path, identity_id) VALUES (?, ?, ?, ?)",
+            ("p1", "test", "/tmp", "nonexistent-account-id"),
+        )
+        await db.commit()
