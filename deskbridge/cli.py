@@ -1,5 +1,4 @@
 import asyncio
-import sys
 from pathlib import Path
 
 import click
@@ -32,7 +31,7 @@ def start(config_path: str):
         config = load_config(Path(config_path))
     except ConfigError as e:
         click.echo(f"Config error: {e}", err=True)
-        sys.exit(1)
+        raise SystemExit(1)
 
     click.echo(f"Starting DeskBridge (config: {config_path})")
 
@@ -42,6 +41,24 @@ def start(config_path: str):
     except KeyboardInterrupt:
         pass
     click.echo("DeskBridge stopped.")
+
+
+async def _show_status(db_path: Path) -> None:
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            "SELECT label, health, session_id, last_unlocked_at FROM accounts"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        if not rows:
+            click.echo("No accounts found in database.")
+            return
+        for row in rows:
+            click.echo(
+                f"  [{row['health']}] {row['label']}  "
+                f"session={row['session_id'] or 'none'}  "
+                f"last_unlocked={row['last_unlocked_at'] or 'never'}"
+            )
 
 
 @cli.command()
@@ -59,28 +76,11 @@ def status(config_path: str):
         config = load_config(Path(config_path))
     except ConfigError as e:
         click.echo(f"Config error: {e}", err=True)
-        sys.exit(1)
+        raise SystemExit(1)
 
     db_path = Path(config.supervisor.db_path).expanduser()
     if not db_path.exists():
         click.echo("No database found — DeskBridge has not been started yet.")
         return
 
-    async def _show_status():
-        async with aiosqlite.connect(db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT label, health, session_id, last_unlocked_at FROM accounts"
-            ) as cursor:
-                rows = await cursor.fetchall()
-            if not rows:
-                click.echo("No accounts found in database.")
-                return
-            for row in rows:
-                click.echo(
-                    f"  [{row['health']}] {row['label']}  "
-                    f"session={row['session_id'] or 'none'}  "
-                    f"last_unlocked={row['last_unlocked_at'] or 'never'}"
-                )
-
-    asyncio.run(_show_status())
+    asyncio.run(_show_status(db_path))
