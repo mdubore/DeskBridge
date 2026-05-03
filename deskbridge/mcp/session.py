@@ -33,7 +33,7 @@ class SessionBroker:
         try:
             passphrase = identity.resolve_passphrase()
         except Exception as e:
-            log.error("passphrase_resolve_failed", identity=label, error=str(e))
+            log.error("passphrase_resolve_failed", identity=label, exc_info=True)
             await self._store.update_account_session(
                 id=account_id, session_id=None, health="degraded"
             )
@@ -63,6 +63,7 @@ class SessionBroker:
                 category=e.mcp_error.category,
                 message=e.mcp_error.message,
             )
+            self._session_ids.pop(label, None)
             await self._store.update_account_session(
                 id=account_id, session_id=None, health="degraded"
             )
@@ -83,7 +84,10 @@ class SessionBroker:
         for label, identity in self._identities.items():
             account_id = self._account_id(label)
             row = await self._store.get_account(id=account_id)
-            if row is None or row["health"] != "ok":
+            if row is None:
+                log.error("account_row_missing_skipping_refresh", identity=label)
+                continue
+            if row["health"] != "ok":
                 log.info("refreshing_degraded_session", identity=label)
                 await self._unlock_identity(label, identity)
 

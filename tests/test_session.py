@@ -105,3 +105,51 @@ async def test_capture_approval_persists_in_store(broker, store):
     assert appr is not None
     assert appr["mcp_approval_id"] == "mcp-appr-999"
     assert appr["status"] == "pending"
+
+
+async def test_refresh_skips_healthy_identity(broker, store, mock_client, monkeypatch):
+    monkeypatch.setenv("ALICE", "passphrase123")
+    mock_client.call_tool.return_value = {"session_id": "sess-1"}
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:ALICE"
+    )
+    await broker.unlock_all()
+    mock_client.call_tool.reset_mock()
+
+    await broker.refresh_if_needed()
+
+    mock_client.call_tool.assert_not_called()
+
+
+async def test_refresh_re_unlocks_degraded_identity(broker, store, mock_client, monkeypatch):
+    monkeypatch.setenv("ALICE", "passphrase123")
+    mock_client.call_tool.return_value = {"session_id": "sess-refreshed"}
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:ALICE"
+    )
+    await store.update_account_session(id="acc-alice", session_id=None, health="degraded")
+
+    await broker.refresh_if_needed()
+
+    acc = await store.get_account(id="acc-alice")
+    assert acc["health"] == "ok"
+    assert acc["session_id"] == "sess-refreshed"
+
+
+async def test_unlock_failure_clears_in_memory_session(broker, store, mock_client, monkeypatch):
+    monkeypatch.setenv("ALICE", "passphrase123")
+    mock_client.call_tool.return_value = {"session_id": "sess-stale"}
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:ALICE"
+    )
+    await broker.unlock_all()
+    assert await broker.get_session_id("alice") == "sess-stale"
+
+    mock_client.call_tool.side_effect = McpToolError(
+        mcp_error=McpError(category=McpErrorCategory.INTERNAL_ERROR, message="crashed"),
+        routing=RoutingDecision.RETRY,
+    )
+    await store.update_account_session(id="acc-alice", session_id=None, health="degraded")
+    await broker.refresh_if_needed()
+
+    assert await broker.get_session_id("alice") is None
