@@ -1,5 +1,4 @@
 import json
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from deskbridge.mcp.client import McpClient, McpToolError

@@ -1,4 +1,5 @@
 import json
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -29,7 +30,7 @@ class McpClient:
         self._session: ClientSession | None = None
 
     @asynccontextmanager
-    async def connect(self):
+    async def connect(self) -> AsyncGenerator["McpClient", None]:
         server_params = StdioServerParameters(
             command=self._command,
             args=self._args,
@@ -52,7 +53,9 @@ class McpClient:
         text = result.content[0].text if result.content else ""
 
         if result.isError:
-            mcp_error = McpError.from_tool_result_text(text)
+            mcp_error = McpError.from_tool_result_text(
+                text or "MCP tool returned error with no content"
+            )
             routing = route_mcp_error(mcp_error)
             raise McpToolError(mcp_error=mcp_error, routing=routing)
 
