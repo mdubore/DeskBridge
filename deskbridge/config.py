@@ -3,7 +3,12 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+try:
+    import keyring as kr
+except ImportError:
+    kr = None  # type: ignore[assignment]
 
 
 class ConfigError(Exception):
@@ -44,7 +49,10 @@ class IdentityConfig(BaseModel):
                     "expected keyring:service:key"
                 )
             service, key = parts
-            import keyring as kr
+            if kr is None:
+                raise ConfigError(
+                    "keyring package is required for keyring: passphrase refs"
+                )
             value = kr.get_password(service, key)
             if value is None:
                 raise ConfigError(
@@ -75,6 +83,13 @@ class DeskBridgeConfig(BaseModel):
     identities: list[IdentityConfig]
     projects: list[ProjectConfig] = Field(default_factory=list)
 
+    @field_validator("identities")
+    @classmethod
+    def identities_not_empty(cls, v: list[IdentityConfig]) -> list[IdentityConfig]:
+        if not v:
+            raise ValueError("must include at least one [[identities]] entry")
+        return v
+
 
 def load_config(path: Path) -> DeskBridgeConfig:
     try:
@@ -84,9 +99,6 @@ def load_config(path: Path) -> DeskBridgeConfig:
         raise ConfigError(f"Config file not found: {path}")
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"Invalid TOML in {path}: {e}")
-
-    if "identities" not in raw:
-        raise ConfigError("Config must include at least one [[identities]] entry")
 
     try:
         config = DeskBridgeConfig.model_validate(raw)

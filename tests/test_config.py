@@ -62,7 +62,7 @@ def test_missing_required_field_raises(tmp_path):
     """)
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(bad)
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError, match="identities"):
         load_config(cfg_file)
 
 
@@ -82,3 +82,21 @@ def test_passphrase_ref_env_missing_raises(tmp_path, monkeypatch):
     config = load_config(cfg_file)
     with pytest.raises(ConfigError, match="ALICE_PASSPHRASE"):
         config.identities[0].resolve_passphrase()
+
+
+def test_passphrase_ref_invalid_format_raises():
+    from deskbridge.config import IdentityConfig
+    identity = IdentityConfig(
+        label="alice", npub="npub1alice", passphrase_ref="plaintext_secret"
+    )
+    with pytest.raises(ConfigError, match="Unknown passphrase_ref format"):
+        identity.resolve_passphrase()
+
+
+def test_passphrase_ref_keyring_bad_format_raises():
+    from deskbridge.config import IdentityConfig
+    identity = IdentityConfig(
+        label="alice", npub="npub1alice", passphrase_ref="keyring:onlyone"
+    )
+    with pytest.raises(ConfigError, match="expected keyring:service:key"):
+        identity.resolve_passphrase()
