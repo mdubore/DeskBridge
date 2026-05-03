@@ -83,3 +83,16 @@ def test_action_request_risk_level():
         requested_risk_level=ActionRiskLevel.LOW,
     )
     assert req.requested_risk_level == ActionRiskLevel.LOW
+
+
+def test_mcp_error_from_non_dict_error_value_becomes_internal():
+    raw = json.dumps({"error": "plain string error"})
+    err = McpError.from_tool_result_text(raw)
+    assert err.category == McpErrorCategory.INTERNAL_ERROR
+    assert err.message == raw
+
+
+def test_mcp_error_missing_message_falls_back_to_raw_text():
+    raw = json.dumps({"error": {"category": "internal_error"}})
+    err = McpError.from_tool_result_text(raw)
+    assert err.message == raw

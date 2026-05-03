@@ -38,9 +38,6 @@ class McpErrorCategory(StrEnum):
     INTERNAL_ERROR = "internal_error"
 
 
-_KNOWN_CATEGORIES = {c.value for c in McpErrorCategory}
-
-
 class McpCursor(BaseModel):
     last_entity_id: str | None = None
     last_created_at: str | None = None
@@ -66,17 +63,17 @@ class McpError(BaseModel):
             data = json.loads(text)
             if isinstance(data, dict) and "error" in data:
                 err = data["error"]
-                raw_category = err.get("category", "internal_error")
-                category = (
-                    McpErrorCategory(raw_category)
-                    if raw_category in _KNOWN_CATEGORIES
-                    else McpErrorCategory.INTERNAL_ERROR
-                )
-                return cls(
-                    category=category,
-                    message=err.get("message", text),
-                    approval_request_id=err.get("approval_request_id"),
-                )
+                if isinstance(err, dict):
+                    raw_category = err.get("category", "internal_error")
+                    try:
+                        category = McpErrorCategory(raw_category)
+                    except ValueError:
+                        category = McpErrorCategory.INTERNAL_ERROR
+                    return cls(
+                        category=category,
+                        message=err.get("message", text),
+                        approval_request_id=err.get("approval_request_id"),
+                    )
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
         return cls(
