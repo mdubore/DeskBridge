@@ -135,8 +135,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 
 async def apply_schema(conn: aiosqlite.Connection) -> None:
-    await conn.execute("PRAGMA foreign_keys = ON")
     await conn.executescript(_DDL)
+    await conn.execute("PRAGMA foreign_keys = ON")
     async with conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
         row = await cur.fetchone()
     if row[0] == 0:

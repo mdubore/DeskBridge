@@ -16,7 +16,7 @@ class Store:
         label: str,
         passphrase_ref: str,
     ) -> None:
-        await self._conn.execute(
+        async with self._conn.execute(
             """
             INSERT INTO accounts (id, npub, label, passphrase_ref)
             VALUES (?, ?, ?, ?)
@@ -26,7 +26,8 @@ class Store:
                 passphrase_ref = excluded.passphrase_ref
             """,
             (id, npub, label, passphrase_ref),
-        )
+        ):
+            pass
         await self._conn.commit()
 
     async def get_account(self, id: str) -> aiosqlite.Row | None:
@@ -41,7 +42,7 @@ class Store:
         session_id: str | None,
         health: str,
     ) -> None:
-        await self._conn.execute(
+        async with self._conn.execute(
             """
             UPDATE accounts
             SET session_id = ?,
@@ -50,7 +51,8 @@ class Store:
             WHERE id = ?
             """,
             (session_id, health, id),
-        )
+        ):
+            pass
         await self._conn.commit()
 
     async def upsert_cursor(
@@ -62,7 +64,7 @@ class Store:
         last_imported_at: str | None,
         raw_json: str,
     ) -> None:
-        await self._conn.execute(
+        async with self._conn.execute(
             """
             INSERT INTO cursors
                 (id, cursor_type, identity_id, last_entity_id,
@@ -84,7 +86,8 @@ class Store:
                 last_imported_at,
                 raw_json,
             ),
-        )
+        ):
+            pass
         await self._conn.commit()
 
     async def get_cursor(
@@ -106,7 +109,7 @@ class Store:
         request_text: str | None,
         expires_at: str | None,
     ) -> None:
-        await self._conn.execute(
+        async with self._conn.execute(
             """
             INSERT INTO approvals
                 (id, mcp_approval_id, work_item_id, action_description,
@@ -115,7 +118,8 @@ class Store:
             """,
             (id, mcp_approval_id, work_item_id, action_description,
              scope, request_text, expires_at),
-        )
+        ):
+            pass
         await self._conn.commit()
 
     async def get_approval(self, id: str) -> aiosqlite.Row | None:
@@ -139,14 +143,15 @@ class Store:
         work_item_id: str | None = None,
         payload_json: str = "{}",
     ) -> None:
-        await self._conn.execute(
+        async with self._conn.execute(
             """
             INSERT INTO audit_log
                 (id, event_type, identity_id, project_id, work_item_id, payload_json)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (id, event_type, identity_id, project_id, work_item_id, payload_json),
-        )
+        ):
+            pass
         await self._conn.commit()
 
     async def get_audit_events(self, event_type: str) -> list[aiosqlite.Row]:

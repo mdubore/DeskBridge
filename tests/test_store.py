@@ -1,4 +1,5 @@
 import pytest
+import aiosqlite
 from deskbridge.db.store import Store, bootstrap_accounts_from_config
 from deskbridge.config import DeskBridgeConfig, SupervisorConfig, McpConfig, IdentityConfig
 
@@ -131,3 +132,15 @@ async def test_bootstrap_accounts_is_idempotent(store: Store):
     alice = await store.get_account(id="acc-alice")
     assert alice is not None
     assert alice["label"] == "alice"
+
+
+async def test_cursor_rejects_unknown_identity(store: Store):
+    with pytest.raises(aiosqlite.IntegrityError):
+        await store.upsert_cursor(
+            cursor_type="dm_watcher",
+            identity_id="acc-does-not-exist",
+            last_entity_id=None,
+            last_created_at=None,
+            last_imported_at=None,
+            raw_json="{}",
+        )
