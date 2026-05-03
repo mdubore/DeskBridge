@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -37,7 +38,10 @@ class McpClient:
         )
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
-                await session.initialize()
+                await asyncio.wait_for(
+                    session.initialize(),
+                    timeout=float(self._startup_timeout_secs),
+                )
                 self._session = session
                 try:
                     yield self
