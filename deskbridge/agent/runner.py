@@ -11,11 +11,6 @@ from deskbridge.mcp.session import SessionBroker
 
 log = structlog.get_logger()
 
-_ADAPTER_CLI: dict[str, str] = {
-    "claude-code": "claude",
-    "codex": "codex",
-}
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

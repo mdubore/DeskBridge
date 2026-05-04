@@ -1,6 +1,5 @@
 import asyncio
-import collections
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from deskbridge.agent.runner import AgentRunner
 from deskbridge.config import ProjectConfig
@@ -139,10 +138,16 @@ async def test_runner_cancelled_sends_sigterm_and_reraises():
     store = make_store()
     proc = make_proc(stdout_lines=[])
 
-    async def hang():
-        await asyncio.sleep(9999)
+    call_count = 0
 
-    proc.wait = hang
+    async def hang_then_fast():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            await asyncio.sleep(9999)  # first call hangs (triggers CancelledError path)
+        # second call returns immediately (after SIGTERM cleanup wait)
+
+    proc.wait = hang_then_fast
 
     with patch("asyncio.create_subprocess_exec", return_value=proc):
         runner = make_runner(work_item, store=store, timeout_secs=9999.0)
@@ -155,6 +160,7 @@ async def test_runner_cancelled_sends_sigterm_and_reraises():
             pass  # expected
 
     proc.terminate.assert_called_once()
+    proc.kill.assert_not_called()  # second proc.wait() returned fast, no need for SIGKILL
     # complete_work_item must NOT be called — CancelledError skips steps 6-9
     store.complete_work_item.assert_not_awaited()
 
