@@ -110,3 +110,18 @@ def test_empty_identities_raises(tmp_path):
             mcp=McpConfig(command="nostrdesk-mcp"),
             identities=[]
         )
+
+
+def test_identity_config_operator_npub_defaults_to_none():
+    from deskbridge.config import IdentityConfig
+    identity = IdentityConfig(label="alice", npub="npub1alice", passphrase_ref="env:X")
+    assert identity.operator_npub is None
+
+
+def test_identity_config_operator_npub_can_be_set():
+    from deskbridge.config import IdentityConfig
+    identity = IdentityConfig(
+        label="alice", npub="npub1alice", passphrase_ref="env:X",
+        operator_npub="npub1op"
+    )
+    assert identity.operator_npub == "npub1op"

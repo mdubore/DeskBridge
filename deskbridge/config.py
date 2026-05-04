@@ -31,6 +31,7 @@ class IdentityConfig(BaseModel):
     label: str
     npub: str
     passphrase_ref: str
+    operator_npub: str | None = None
 
     def resolve_passphrase(self) -> str:
         if self.passphrase_ref.startswith("env:"):
