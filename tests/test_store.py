@@ -471,3 +471,194 @@ async def test_insert_outbox_item_idempotent_on_same_key(store: Store, db_conn):
     async with db_conn.execute("SELECT COUNT(*) FROM outbox") as cur:
         row = await cur.fetchone()
     assert row[0] == 1
+
+
+# ===========================================================================
+# Phase 4 Store methods
+# ===========================================================================
+
+async def _seed_work_item_phase4(conn, *, id, identity_id, status="pending"):
+    await conn.execute(
+        """
+        INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key)
+        VALUES (?, 'dm', ?, ?, ?, ?)
+        """,
+        (id, id, identity_id, status, f"idem-{id}"),
+    )
+    await conn.commit()
+
+
+async def _seed_approval(conn, *, id, work_item_id, status="pending"):
+    await conn.execute(
+        """
+        INSERT INTO approvals (id, work_item_id, action_description, status)
+        VALUES (?, ?, 'do something', ?)
+        """,
+        (id, work_item_id, status),
+    )
+    await conn.commit()
+
+
+# get_work_item
+# ---------------------------------------------------------------------------
+
+async def test_get_work_item_returns_row(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice")
+    row = await store.get_work_item("wi-1")
+    assert row is not None
+    assert row["id"] == "wi-1"
+
+
+async def test_get_work_item_returns_none_for_missing(store: Store):
+    result = await store.get_work_item("nonexistent")
+    assert result is None
+
+
+# get_latest_work_item
+# ---------------------------------------------------------------------------
+
+async def test_get_latest_work_item_returns_most_recent(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice")
+    await _seed_work_item_phase4(db_conn, id="wi-2", identity_id="acc-alice")
+    row = await store.get_latest_work_item("acc-alice")
+    assert row is not None
+    assert row["id"] == "wi-2"
+
+
+async def test_get_latest_work_item_returns_none_when_empty(store: Store):
+    result = await store.get_latest_work_item("acc-nobody")
+    assert result is None
+
+
+# get_latest_dispatched_work_item
+# ---------------------------------------------------------------------------
+
+async def test_get_latest_dispatched_work_item_finds_dispatched(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice", status="pending")
+    await _seed_work_item_phase4(db_conn, id="wi-2", identity_id="acc-alice", status="dispatched")
+    row = await store.get_latest_dispatched_work_item("acc-alice")
+    assert row is not None
+    assert row["id"] == "wi-2"
+
+
+async def test_get_latest_dispatched_work_item_finds_cancel_requested(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice", status="cancel_requested")
+    row = await store.get_latest_dispatched_work_item("acc-alice")
+    assert row is not None
+    assert row["id"] == "wi-1"
+
+
+async def test_get_latest_dispatched_work_item_ignores_pending(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice", status="pending")
+    result = await store.get_latest_dispatched_work_item("acc-alice")
+    assert result is None
+
+
+# mark_work_item_cancel_requested
+# ---------------------------------------------------------------------------
+
+async def test_mark_work_item_cancel_requested_updates_status(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice", status="dispatched")
+    await store.mark_work_item_cancel_requested("wi-1")
+    row = await store.get_work_item("wi-1")
+    assert row["status"] == "cancel_requested"
+
+
+# get_pending_approval
+# ---------------------------------------------------------------------------
+
+async def test_get_pending_approval_returns_most_recent(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice")
+    await _seed_approval(db_conn, id="appr-1", work_item_id="wi-1")
+    row = await store.get_pending_approval("acc-alice")
+    assert row is not None
+    assert row["id"] == "appr-1"
+
+
+async def test_get_pending_approval_ignores_resolved(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice")
+    await _seed_approval(db_conn, id="appr-1", work_item_id="wi-1", status="approved")
+    result = await store.get_pending_approval("acc-alice")
+    assert result is None
+
+
+async def test_get_pending_approval_returns_none_when_empty(store: Store):
+    result = await store.get_pending_approval("acc-nobody")
+    assert result is None
+
+
+# resolve_approval
+# ---------------------------------------------------------------------------
+
+async def test_resolve_approval_approved(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice")
+    await _seed_approval(db_conn, id="appr-1", work_item_id="wi-1")
+    await store.resolve_approval("appr-1", "approved")
+    async with db_conn.execute("SELECT status, resolved_at FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "approved"
+    assert row["resolved_at"] is not None
+
+
+async def test_resolve_approval_rejected(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice")
+    await _seed_approval(db_conn, id="appr-1", work_item_id="wi-1")
+    await store.resolve_approval("appr-1", "rejected")
+    async with db_conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "rejected"
+
+
+# get_project_groups
+# ---------------------------------------------------------------------------
+
+async def test_get_project_groups_returns_list(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO projects (id, name, repo_path, identity_id, groups_json) "
+        "VALUES ('proj-1', 'P', '/repo', 'acc-alice', '[\"grp-1\", \"grp-2\"]')"
+    )
+    await db_conn.commit()
+    groups = await store.get_project_groups("acc-alice")
+    assert groups == ["grp-1", "grp-2"]
+
+
+async def test_get_project_groups_returns_empty_when_no_project(store: Store):
+    result = await store.get_project_groups("acc-nobody")
+    assert result == []
+
+
+async def test_get_project_groups_returns_empty_list_for_empty_json(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO projects (id, name, repo_path, identity_id, groups_json) "
+        "VALUES ('proj-1', 'P', '/repo', 'acc-alice', '[]')"
+    )
+    await db_conn.commit()
+    groups = await store.get_project_groups("acc-alice")
+    assert groups == []
+
+
+# insert_outbox_item with dest_group_id
+# ---------------------------------------------------------------------------
+
+async def test_insert_outbox_item_with_group_id(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await store.insert_outbox_item(
+        "ob-grp-1", "acc-alice", None, "done", "idem-grp-1",
+        dest_group_id="grp-1",
+    )
+    async with db_conn.execute("SELECT dest_pubkey, dest_group_id FROM outbox WHERE id='ob-grp-1'") as cur:
+        row = await cur.fetchone()
+    assert row["dest_pubkey"] is None
+    assert row["dest_group_id"] == "grp-1"

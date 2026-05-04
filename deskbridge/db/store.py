@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import aiosqlite
@@ -306,20 +307,93 @@ class Store:
         self,
         id: str,
         identity_id: str,
-        dest_pubkey: str,
+        dest_pubkey: str | None,
         message_text: str,
         idempotency_key: str,
+        dest_group_id: str | None = None,
     ) -> None:
         async with self._conn.execute(
             """
             INSERT OR IGNORE INTO outbox
-                (id, identity_id, dest_pubkey, message_text, idempotency_key)
-            VALUES (?, ?, ?, ?, ?)
+                (id, identity_id, dest_pubkey, dest_group_id, message_text, idempotency_key)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (id, identity_id, dest_pubkey, message_text, idempotency_key),
+            (id, identity_id, dest_pubkey, dest_group_id, message_text, idempotency_key),
         ):
             pass
         await self._conn.commit()
+
+    async def get_work_item(self, id: str) -> aiosqlite.Row | None:
+        async with self._conn.execute(
+            "SELECT * FROM work_items WHERE id = ?", (id,)
+        ) as cur:
+            return await cur.fetchone()
+
+    async def get_latest_work_item(self, identity_id: str) -> aiosqlite.Row | None:
+        async with self._conn.execute(
+            "SELECT * FROM work_items WHERE identity_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (identity_id,),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def get_latest_dispatched_work_item(self, identity_id: str) -> aiosqlite.Row | None:
+        async with self._conn.execute(
+            """
+            SELECT * FROM work_items
+            WHERE identity_id = ? AND status IN ('dispatched', 'cancel_requested')
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+            """,
+            (identity_id,),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def mark_work_item_cancel_requested(self, id: str) -> None:
+        async with self._conn.execute(
+            """
+            UPDATE work_items
+            SET status = 'cancel_requested',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ?
+            """,
+            (id,),
+        ):
+            pass
+        await self._conn.commit()
+
+    async def get_pending_approval(self, identity_id: str) -> aiosqlite.Row | None:
+        async with self._conn.execute(
+            """
+            SELECT a.* FROM approvals a
+            JOIN work_items w ON a.work_item_id = w.id
+            WHERE w.identity_id = ? AND a.status = 'pending'
+            ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1
+            """,
+            (identity_id,),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def resolve_approval(self, id: str, status: str) -> None:
+        async with self._conn.execute(
+            """
+            UPDATE approvals
+            SET status = ?,
+                resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ?
+            """,
+            (status, id),
+        ):
+            pass
+        await self._conn.commit()
+
+    async def get_project_groups(self, identity_id: str) -> list[str]:
+        async with self._conn.execute(
+            "SELECT groups_json FROM projects WHERE identity_id = ? LIMIT 1",
+            (identity_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return []
+        return json.loads(row["groups_json"])
 
 
 async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig) -> None:
