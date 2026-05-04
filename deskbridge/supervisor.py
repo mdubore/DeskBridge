@@ -19,7 +19,7 @@ log = structlog.get_logger()
 class Supervisor:
     def __init__(self, config: DeskBridgeConfig) -> None:
         self._config = config
-        self._shutdown_event = asyncio.Event()
+        self._shutdown_event = asyncio.Event()  # single-use: not reset between run() calls
 
     def request_shutdown(self) -> None:
         log.info("shutdown_requested")

@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 import aiosqlite
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, Mock, ANY
 from deskbridge.supervisor import Supervisor
 from deskbridge.config import DeskBridgeConfig, SupervisorConfig, McpConfig, IdentityConfig
 
@@ -92,7 +92,6 @@ async def test_supervisor_calls_refresh_on_heartbeat(tmp_path, monkeypatch, mock
 
 
 async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, mock_broker, mock_client_ctx):
-    from unittest.mock import ANY
     monkeypatch.setenv("ALICE", "pass")
     config = make_config(tmp_path)
 
@@ -105,8 +104,12 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
 
         mock_instance = MockMcpClient.return_value
         mock_instance.connect.return_value = mock_client_ctx
-        MockDmWatcher.return_value.run = AsyncMock()
-        MockOutboxDrainer.return_value.run = AsyncMock()
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
 
         supervisor = Supervisor(config=config)
 
