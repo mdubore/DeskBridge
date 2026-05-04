@@ -89,3 +89,46 @@ async def test_supervisor_calls_refresh_on_heartbeat(tmp_path, monkeypatch, mock
         )
 
     assert mock_broker.refresh_if_needed.call_count >= 3
+
+
+async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, mock_broker, mock_client_ctx):
+    from unittest.mock import ANY
+    monkeypatch.setenv("ALICE", "pass")
+    config = make_config(tmp_path)
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer:
+
+        mock_instance = MockMcpClient.return_value
+        mock_instance.connect.return_value = mock_client_ctx
+        MockDmWatcher.return_value.run = AsyncMock()
+        MockOutboxDrainer.return_value.run = AsyncMock()
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockDmWatcher.assert_called_once_with(
+        identity_label="alice",
+        store=ANY,
+        client=ANY,
+        broker=mock_broker,
+        shutdown_event=ANY,
+    )
+    MockOutboxDrainer.assert_called_once_with(
+        store=ANY,
+        client=ANY,
+        broker=mock_broker,
+        identities=config.identities,
+        shutdown_event=ANY,
+    )
+    MockDmWatcher.return_value.run.assert_called_once()
+    MockOutboxDrainer.return_value.run.assert_called_once()
