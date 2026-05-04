@@ -144,3 +144,120 @@ async def test_cursor_rejects_unknown_identity(store: Store):
             last_imported_at=None,
             raw_json="{}",
         )
+
+
+async def test_upsert_work_item_inserts(store: Store):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await store.upsert_work_item(
+        id="wi-1",
+        source_type="dm",
+        source_id="msg-1",
+        identity_id="acc-alice",
+        summary="hello world",
+        payload_json='{"id":"msg-1","content":"hello world"}',
+        idempotency_key="msg-1",
+    )
+    async with store._conn.execute("SELECT * FROM work_items WHERE id = 'wi-1'") as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["source_type"] == "dm"
+    assert row["source_id"] == "msg-1"
+    assert row["idempotency_key"] == "msg-1"
+    assert row["summary"] == "hello world"
+
+
+async def test_upsert_work_item_idempotent(store: Store):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    for _ in range(2):
+        await store.upsert_work_item(
+            id="wi-1",
+            source_type="dm",
+            source_id="msg-1",
+            identity_id="acc-alice",
+            summary="hello",
+            payload_json="{}",
+            idempotency_key="msg-1",
+        )
+    async with store._conn.execute("SELECT COUNT(*) FROM work_items") as cur:
+        row = await cur.fetchone()
+    assert row[0] == 1
+
+
+async def _seed_outbox_row(
+    conn,
+    *,
+    id: str,
+    identity_id: str = "acc-alice",
+    dest_pubkey: str = "npub1dest",
+    message_text: str = "hello",
+    idempotency_key: str,
+    delivery_status: str = "pending",
+    delivery_attempts: int = 0,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO outbox
+            (id, identity_id, dest_pubkey, message_text, idempotency_key,
+             delivery_status, delivery_attempts)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (id, identity_id, dest_pubkey, message_text, idempotency_key,
+         delivery_status, delivery_attempts),
+    )
+    await conn.commit()
+
+
+async def test_get_pending_outbox_items_returns_pending(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1")
+    rows = await store.get_pending_outbox_items(max_attempts=3)
+    assert len(rows) == 1
+    assert rows[0]["id"] == "ob-1"
+
+
+async def test_get_pending_outbox_items_excludes_exhausted(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1", delivery_attempts=3)
+    rows = await store.get_pending_outbox_items(max_attempts=3)
+    assert rows == []
+
+
+async def test_get_pending_outbox_items_excludes_failed(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1", delivery_status="failed")
+    rows = await store.get_pending_outbox_items(max_attempts=3)
+    assert rows == []
+
+
+async def test_update_outbox_delivery_delivered(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1")
+    await store.update_outbox_delivery("ob-1", "delivered", '{"ok":true}')
+    async with db_conn.execute("SELECT * FROM outbox WHERE id = 'ob-1'") as cur:
+        row = await cur.fetchone()
+    assert row["delivery_status"] == "delivered"
+    assert row["delivery_attempts"] == 1
+    assert row["delivered_at"] is not None
+    assert row["delivery_result_json"] == '{"ok":true}'
+
+
+async def test_update_outbox_delivery_pending_increments(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1")
+    await store.update_outbox_delivery("ob-1", "pending", '{"error":"transient"}')
+    async with db_conn.execute("SELECT * FROM outbox WHERE id = 'ob-1'") as cur:
+        row = await cur.fetchone()
+    assert row["delivery_status"] == "pending"
+    assert row["delivery_attempts"] == 1
+    assert row["delivered_at"] is None
+
+
+async def test_update_outbox_delivery_failed(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1")
+    await store.update_outbox_delivery("ob-1", "failed", '{"error":"reject"}')
+    async with db_conn.execute("SELECT * FROM outbox WHERE id = 'ob-1'") as cur:
+        row = await cur.fetchone()
+    assert row["delivery_status"] == "failed"
+    assert row["delivery_attempts"] == 1
+    assert row["delivered_at"] is None

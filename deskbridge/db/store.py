@@ -161,6 +161,61 @@ class Store:
         ) as row_cursor:
             return await row_cursor.fetchall()
 
+    async def upsert_work_item(
+        self,
+        id: str,
+        source_type: str,
+        source_id: str,
+        identity_id: str,
+        summary: str,
+        payload_json: str,
+        idempotency_key: str,
+    ) -> None:
+        async with self._conn.execute(
+            """
+            INSERT OR IGNORE INTO work_items
+                (id, source_type, source_id, identity_id, summary, payload_json, idempotency_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (id, source_type, source_id, identity_id, summary, payload_json, idempotency_key),
+        ):
+            pass
+        await self._conn.commit()
+
+    async def get_pending_outbox_items(self, max_attempts: int = 3) -> list[aiosqlite.Row]:
+        async with self._conn.execute(
+            """
+            SELECT * FROM outbox
+            WHERE delivery_status = 'pending'
+              AND delivery_attempts < ?
+            ORDER BY created_at
+            """,
+            (max_attempts,),
+        ) as cur:
+            return await cur.fetchall()
+
+    async def update_outbox_delivery(
+        self,
+        id: str,
+        delivery_status: str,
+        delivery_result_json: str,
+    ) -> None:
+        async with self._conn.execute(
+            """
+            UPDATE outbox
+            SET delivery_status = ?,
+                delivery_attempts = delivery_attempts + 1,
+                delivery_result_json = ?,
+                delivered_at = CASE WHEN ? = 'delivered'
+                               THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                               ELSE NULL END
+            WHERE id = ?
+            """,
+            (delivery_status, delivery_result_json, delivery_status, id),
+        ):
+            pass
+        await self._conn.commit()
+
 
 async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig) -> None:
     for identity in config.identities:
