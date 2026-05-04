@@ -216,6 +216,111 @@ class Store:
             pass
         await self._conn.commit()
 
+    async def get_pending_work_items(
+        self, identity_id: str, limit: int = 10
+    ) -> list[aiosqlite.Row]:
+        async with self._conn.execute(
+            """
+            SELECT * FROM work_items
+            WHERE status = 'pending' AND identity_id = ?
+            ORDER BY priority, created_at
+            LIMIT ?
+            """,
+            (identity_id, limit),
+        ) as cur:
+            return await cur.fetchall()
+
+    async def claim_work_item(self, id: str) -> bool:
+        async with self._conn.execute(
+            """
+            UPDATE work_items
+            SET status = 'dispatched',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ? AND status = 'pending'
+            """,
+            (id,),
+        ) as cur:
+            claimed = cur.rowcount > 0
+        await self._conn.commit()
+        return claimed
+
+    async def upsert_agent_run(
+        self, id: str, work_item_id: str, adapter_type: str
+    ) -> None:
+        async with self._conn.execute(
+            "INSERT OR IGNORE INTO agent_runs (id, work_item_id, adapter_type) VALUES (?, ?, ?)",
+            (id, work_item_id, adapter_type),
+        ):
+            pass
+        await self._conn.commit()
+
+    async def update_agent_run(
+        self,
+        id: str,
+        *,
+        status: str | None = None,
+        result_summary: str | None = None,
+        heartbeat_at: str | None = None,
+    ) -> None:
+        if status is None and result_summary is None and heartbeat_at is None:
+            raise ValueError("at least one field must be provided to update_agent_run")
+        parts = []
+        params: list = []
+        if status is not None:
+            parts.append("status = ?")
+            params.append(status)
+        if result_summary is not None:
+            parts.append("result_summary = ?")
+            params.append(result_summary)
+        if heartbeat_at is not None:
+            parts.append("heartbeat_at = ?")
+            params.append(heartbeat_at)
+        parts.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+        params.append(id)
+        sql = f"UPDATE agent_runs SET {', '.join(parts)} WHERE id = ?"
+        async with self._conn.execute(sql, params):
+            pass
+        await self._conn.commit()
+
+    async def complete_work_item(self, id: str, status: str) -> None:
+        async with self._conn.execute(
+            """
+            UPDATE work_items
+            SET status = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ?
+            """,
+            (status, id),
+        ):
+            pass
+        await self._conn.commit()
+
+    async def get_project_for_identity(self, identity_id: str) -> aiosqlite.Row | None:
+        async with self._conn.execute(
+            "SELECT * FROM projects WHERE identity_id = ? LIMIT 1",
+            (identity_id,),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def insert_outbox_item(
+        self,
+        id: str,
+        identity_id: str,
+        dest_pubkey: str,
+        message_text: str,
+        idempotency_key: str,
+    ) -> None:
+        async with self._conn.execute(
+            """
+            INSERT OR IGNORE INTO outbox
+                (id, identity_id, dest_pubkey, message_text, idempotency_key)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (id, identity_id, dest_pubkey, message_text, idempotency_key),
+        ):
+            pass
+        await self._conn.commit()
+
 
 async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig) -> None:
     for identity in config.identities:

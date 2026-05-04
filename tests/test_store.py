@@ -269,3 +269,196 @@ async def test_update_outbox_delivery_failed(store: Store, db_conn):
     assert row["delivery_status"] == "failed"
     assert row["delivery_attempts"] == 1
     assert row["delivered_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Phase 3 store tests
+# ---------------------------------------------------------------------------
+
+async def _seed_project(conn, *, id="proj-1", identity_id="acc-alice") -> None:
+    await conn.execute(
+        "INSERT INTO projects (id, name, repo_path, identity_id, agents_json) VALUES (?, ?, ?, ?, ?)",
+        (id, "MyProject", "/repo/myproject", identity_id, '["claude-code"]'),
+    )
+    await conn.commit()
+
+
+async def _seed_work_item(store, *, id="wi-1", identity_id="acc-alice",
+                          status="pending", idempotency_key="k1") -> None:
+    await store.upsert_work_item(
+        id=id, source_type="dm", source_id="msg-1",
+        identity_id=identity_id, summary="fix the bug",
+        payload_json='{"key": "value"}', idempotency_key=idempotency_key,
+    )
+    if status != "pending":
+        async with store._conn.execute(
+            "UPDATE work_items SET status = ? WHERE id = ?", (status, id)
+        ):
+            pass
+        await store._conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# get_pending_work_items
+# ---------------------------------------------------------------------------
+
+async def test_get_pending_work_items_returns_pending(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    rows = await store.get_pending_work_items("acc-alice", limit=10)
+    assert len(rows) == 1
+    assert rows[0]["id"] == "wi-1"
+
+
+async def test_get_pending_work_items_excludes_dispatched(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, status="dispatched")
+    rows = await store.get_pending_work_items("acc-alice", limit=10)
+    assert rows == []
+
+
+async def test_get_pending_work_items_excludes_other_identity(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await store.upsert_account(id="acc-bob", npub="npub1bob", label="bob", passphrase_ref="env:Y")
+    await _seed_work_item(store, identity_id="acc-bob")
+    rows = await store.get_pending_work_items("acc-alice", limit=10)
+    assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# claim_work_item
+# ---------------------------------------------------------------------------
+
+async def test_claim_work_item_returns_true_and_transitions_status(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    claimed = await store.claim_work_item("wi-1")
+    assert claimed is True
+    async with db_conn.execute("SELECT status FROM work_items WHERE id = 'wi-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "dispatched"
+
+
+async def test_claim_work_item_second_call_returns_false(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    first = await store.claim_work_item("wi-1")
+    second = await store.claim_work_item("wi-1")
+    assert first is True
+    assert second is False
+
+
+# ---------------------------------------------------------------------------
+# upsert_agent_run
+# ---------------------------------------------------------------------------
+
+async def test_upsert_agent_run_inserts_row(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    await store.claim_work_item("wi-1")
+    await store.upsert_agent_run("run-1", "wi-1", "claude-code")
+    async with db_conn.execute("SELECT * FROM agent_runs WHERE id = 'run-1'") as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["adapter_type"] == "claude-code"
+    assert row["status"] == "running"
+
+
+async def test_upsert_agent_run_is_noop_on_duplicate(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    await store.claim_work_item("wi-1")
+    await store.upsert_agent_run("run-1", "wi-1", "claude-code")
+    await store.upsert_agent_run("run-1", "wi-1", "codex")  # second call is a no-op
+    async with db_conn.execute("SELECT adapter_type FROM agent_runs WHERE id = 'run-1'") as cur:
+        row = await cur.fetchone()
+    assert row["adapter_type"] == "claude-code"  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# update_agent_run
+# ---------------------------------------------------------------------------
+
+async def test_update_agent_run_sets_heartbeat(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    await store.claim_work_item("wi-1")
+    await store.upsert_agent_run("run-1", "wi-1", "claude-code")
+    await store.update_agent_run("run-1", heartbeat_at="2026-05-03T12:00:00Z")
+    async with db_conn.execute("SELECT heartbeat_at, status FROM agent_runs WHERE id='run-1'") as cur:
+        row = await cur.fetchone()
+    assert row["heartbeat_at"] == "2026-05-03T12:00:00Z"
+    assert row["status"] == "running"  # unchanged
+
+
+async def test_update_agent_run_sets_status_and_result(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    await store.claim_work_item("wi-1")
+    await store.upsert_agent_run("run-1", "wi-1", "claude-code")
+    await store.update_agent_run("run-1", status="done", result_summary="all good")
+    async with db_conn.execute("SELECT status, result_summary FROM agent_runs WHERE id='run-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "done"
+    assert row["result_summary"] == "all good"
+
+
+async def test_update_agent_run_raises_if_no_fields(store: Store):
+    with pytest.raises(ValueError, match="at least one field"):
+        await store.update_agent_run("run-1")
+
+
+# ---------------------------------------------------------------------------
+# complete_work_item
+# ---------------------------------------------------------------------------
+
+async def test_complete_work_item_sets_status(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    await store.complete_work_item("wi-1", "done")
+    async with db_conn.execute("SELECT status FROM work_items WHERE id='wi-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# get_project_for_identity
+# ---------------------------------------------------------------------------
+
+async def test_get_project_for_identity_returns_row(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_project(db_conn, identity_id="acc-alice")
+    row = await store.get_project_for_identity("acc-alice")
+    assert row is not None
+    assert row["id"] == "proj-1"
+
+
+async def test_get_project_for_identity_returns_none_when_missing(store: Store):
+    result = await store.get_project_for_identity("acc-nobody")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# insert_outbox_item
+# ---------------------------------------------------------------------------
+
+async def test_insert_outbox_item_inserts_row(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await store.insert_outbox_item(
+        id="ob-1", identity_id="acc-alice", dest_pubkey="npub1op",
+        message_text="all done", idempotency_key="idem-1",
+    )
+    async with db_conn.execute("SELECT * FROM outbox WHERE id='ob-1'") as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["message_text"] == "all done"
+    assert row["delivery_status"] == "pending"
+
+
+async def test_insert_outbox_item_idempotent_on_same_key(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await store.insert_outbox_item("ob-1", "acc-alice", "npub1op", "first", "idem-1")
+    await store.insert_outbox_item("ob-2", "acc-alice", "npub1op", "second", "idem-1")
+    async with db_conn.execute("SELECT COUNT(*) FROM outbox") as cur:
+        row = await cur.fetchone()
+    assert row[0] == 1
