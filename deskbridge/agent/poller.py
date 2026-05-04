@@ -47,7 +47,7 @@ class WorkItemPoller:
             if self._active_run_task is not None and not self._active_run_task.done():
                 self._active_run_task.cancel()
                 await asyncio.gather(self._active_run_task, return_exceptions=True)
-        log.info("work_item_poller_stopped", identity=self._identity_label)
+            log.info("work_item_poller_stopped", identity=self._identity_label)
 
     async def _poll_once(self) -> None:
         project = await self._store.get_project_for_identity(self._account_id)

@@ -73,7 +73,7 @@ async def test_poller_pending_item_claimed_and_runner_spawned():
         shutdown.set()
 
     with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
-        MockRunner.return_value.run = MagicMock(side_effect=fake_run)
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
         poller = make_poller(store, shutdown)
         await poller.run()
 
@@ -123,3 +123,22 @@ async def test_poller_shutdown_exits_cleanly():
 
     await asyncio.gather(poller.run(), stop())
     # Verifying run() returns cleanly — no exception is the assertion
+
+
+async def test_poller_cancellation_cancels_active_runner():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
+                     summary="fix bug", payload_json="{}")
+    store = make_store(project_row=project_row, pending_items=[work_item])
+
+    poller = make_poller(store, shutdown)
+    blocking_task = asyncio.create_task(asyncio.Event().wait())
+    poller._active_run_task = blocking_task
+
+    poller_task = asyncio.create_task(poller.run())
+    await asyncio.sleep(0.02)
+    poller_task.cancel()
+    await asyncio.gather(poller_task, return_exceptions=True)
+
+    assert blocking_task.cancelled()
