@@ -112,6 +112,25 @@ operator_npub = "npub1operator..."
 
 ### Modified DmWatcher (`deskbridge/dm/watcher.py`)
 
+`__init__` gains one new parameter:
+
+```python
+def __init__(
+    self,
+    identity_label: str,
+    store: Store,
+    client: McpClient,
+    broker: SessionBroker,
+    shutdown_event: asyncio.Event,
+    operator_npub: str | None = None,
+    poll_timeout_secs: int = 30,
+) -> None:
+    ...
+    self._operator_npub = operator_npub
+```
+
+The supervisor passes `operator_npub=identity.operator_npub` when constructing each `DmWatcher`.
+
 The message loop gains an authorization check before intent parsing:
 
 ```python
@@ -199,9 +218,17 @@ async def _handle_reject(self, msg: dict) -> None:
     )
 ```
 
-`_operator_npub` is set in `__init__` from `identity.operator_npub` (passed by supervisor via `IdentityConfig`).
+Each `_handle_*` method wraps its body in `try/except Exception` so one failing handler does not block subsequent messages:
 
-Each `_handle_*` method catches its own exceptions so one bad handler does not block the others.
+```python
+async def _handle_status(self, msg: dict) -> None:
+    try:
+        ...
+    except Exception:
+        log.exception("dm_watcher_handle_status_error", identity=self._identity_label)
+```
+
+The same pattern applies to all five handlers.
 
 ### GroupWatcher (`deskbridge/dm/group_watcher.py`)
 
@@ -346,8 +373,7 @@ async def get_project_groups(self, identity_id: str) -> list[str]:
         row = await cur.fetchone()
     if row is None:
         return []
-    import json
-    return json.loads(row["groups_json"])
+    return json.loads(row["groups_json"])  # json imported at module top
 ```
 
 ### Supervisor wiring (`deskbridge/supervisor.py`)
