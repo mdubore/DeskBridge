@@ -325,6 +325,15 @@ async def test_get_pending_work_items_excludes_other_identity(store: Store, db_c
     assert rows == []
 
 
+async def test_get_pending_work_items_respects_limit(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, id="wi-1", idempotency_key="k1")
+    await _seed_work_item(store, id="wi-2", idempotency_key="k2")
+    await _seed_work_item(store, id="wi-3", idempotency_key="k3")
+    rows = await store.get_pending_work_items("acc-alice", limit=2)
+    assert len(rows) == 2
+
+
 # ---------------------------------------------------------------------------
 # claim_work_item
 # ---------------------------------------------------------------------------
