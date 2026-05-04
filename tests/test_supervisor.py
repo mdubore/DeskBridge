@@ -100,7 +100,8 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
          patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
          patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
          patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
-         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer:
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller:
 
         mock_instance = MockMcpClient.return_value
         mock_instance.connect.return_value = mock_client_ctx
@@ -110,6 +111,7 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
 
         MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
         MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
 
         supervisor = Supervisor(config=config)
 
