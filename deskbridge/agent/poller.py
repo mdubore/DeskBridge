@@ -73,6 +73,14 @@ class WorkItemPoller:
                     identity=self._identity_label,
                     project_id=project["id"],
                 )
+                try:
+                    await self._store.complete_work_item(row["id"], "failed")
+                except Exception:
+                    log.exception(
+                        "work_item_poller_complete_failed",
+                        identity=self._identity_label,
+                        work_item_id=row["id"],
+                    )
                 continue
 
             runner = AgentRunner(

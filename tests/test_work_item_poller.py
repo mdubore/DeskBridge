@@ -142,3 +142,32 @@ async def test_poller_cancellation_cancels_active_runner():
     await asyncio.gather(poller_task, return_exceptions=True)
 
     assert blocking_task.cancelled()
+
+
+async def test_poller_completes_work_item_when_project_config_missing():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-missing")  # DB has project but config has no matching entry
+    work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
+                     summary="fix bug", payload_json="{}")
+    store = make_store(project_row=project_row, pending_items=[work_item], claim_result=True)
+    store.complete_work_item = AsyncMock()
+
+    call_count = 0
+    async def get_pending_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 1:
+            return []  # Return empty on second call so poller exits loop
+        return [work_item]
+
+    store.get_pending_work_items = AsyncMock(side_effect=get_pending_side_effect)
+
+    async def stop():
+        await asyncio.sleep(0.05)
+        shutdown.set()
+
+    # Config has PROJ (id="proj-1") but project_row has id="proj-missing" — no match
+    poller = make_poller(store, shutdown)
+    await asyncio.gather(poller.run(), stop())
+
+    store.complete_work_item.assert_awaited_once_with("wi-1", "failed")
