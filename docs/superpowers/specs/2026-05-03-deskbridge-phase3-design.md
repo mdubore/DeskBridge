@@ -13,7 +13,7 @@
 **In scope:**
 - `WorkItemPoller`: per-identity asyncio task, polls `work_items WHERE status='pending'`, routes by identity → project, enforces one-agent-at-a-time per project, spawns `AgentRunner`
 - `AgentRunner`: manages one subprocess run-to-completion — launches CLI, heartbeats `agent_runs`, captures output, writes result to `work_items`, writes outbox row for DM, calls `update_board_card` via MCP if source is kanban
-- `Store` additions: `get_pending_work_items`, `claim_work_item`, `upsert_agent_run`, `update_agent_run`, `complete_work_item`, `get_project_for_identity`
+- `Store` additions: `get_pending_work_items`, `claim_work_item`, `upsert_agent_run`, `update_agent_run`, `complete_work_item`, `get_project_for_identity`, `insert_outbox_item`
 - Supervisor wiring: spawn one `WorkItemPoller` per identity, cancel on shutdown
 
 **Out of scope:**
@@ -32,7 +32,7 @@
 | `deskbridge/agent/__init__.py` | Create | Package marker |
 | `deskbridge/agent/poller.py` | Create | `WorkItemPoller` — per-identity poll loop |
 | `deskbridge/agent/runner.py` | Create | `AgentRunner` — subprocess lifecycle |
-| `deskbridge/db/store.py` | Modify | Add 6 new Store methods |
+| `deskbridge/db/store.py` | Modify | Add 7 new Store methods |
 | `deskbridge/supervisor.py` | Modify | Spawn `WorkItemPoller` tasks after `unlock_all()` |
 | `tests/test_work_item_poller.py` | Create | `WorkItemPoller` unit tests |
 | `tests/test_agent_runner.py` | Create | `AgentRunner` unit tests |
@@ -62,7 +62,7 @@ SQL: `SELECT * FROM work_items WHERE status = 'pending' AND identity_id = ? ORDE
 async def claim_work_item(self, id: str) -> bool:
 ```
 SQL: `UPDATE work_items SET status = 'dispatched', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND status = 'pending'`
-Returns `conn.total_changes > 0` after the update.
+Use `async with self._conn.execute(sql, params) as cur: return cur.rowcount > 0`. The `AND status = 'pending'` guard makes this race-safe: a second caller gets `rowcount = 0` and returns `False`.
 
 **`upsert_agent_run`** — insert a new `agent_runs` row:
 ```python
@@ -73,7 +73,7 @@ async def upsert_agent_run(
     adapter_type: str,
 ) -> None:
 ```
-SQL: `INSERT INTO agent_runs (id, work_item_id, adapter_type) VALUES (?, ?, ?)`
+SQL: `INSERT OR IGNORE INTO agent_runs (id, work_item_id, adapter_type) VALUES (?, ?, ?)` — `INSERT OR IGNORE` so a restart after crash does not fail if the row was already created.
 
 **`update_agent_run`** — update heartbeat, status, and result fields:
 ```python
@@ -133,7 +133,7 @@ class WorkItemPoller:
    - If `self._active_run_task is not None and not self._active_run_task.done()`: skip (one-at-a-time per poller/identity)
    - `claimed = await store.claim_work_item(row["id"])` — if not claimed, skip
    - Resolve `ProjectConfig` from `self._config.projects` by `next((p for p in self._config.projects if p.id == project["id"]), None)` — if `None`, log error and skip (DB row exists but config entry missing)
-   - Build `AgentRunner`, spawn as `asyncio.create_task(runner.run(), name=f"agent_run_{row['id']}")`; store in `self._active_run_task`
+   - Build `AgentRunner(work_item=row, project=project_cfg, run_id=str(uuid4()), store=store, client=client, broker=broker)`, spawn as `asyncio.create_task(runner.run(), name=f"agent_run_{row['id']}")`; store in `self._active_run_task`
    - Break after spawning one (process one at a time; remaining pending items will be picked up next cycle)
 4. Sleep using `asyncio.wait_for(self._shutdown_event.wait(), timeout=self._poll_interval_secs)` with `except asyncio.TimeoutError: pass`
 
@@ -157,7 +157,6 @@ class AgentRunner:
         store: Store,
         client: McpClient,
         broker: SessionBroker,
-        shutdown_event: asyncio.Event,
         timeout_secs: float = 600.0,
         heartbeat_interval_secs: float = 30.0,
     ) -> None:
@@ -169,27 +168,73 @@ class AgentRunner:
 **`run()` behavior:**
 
 1. `await store.upsert_agent_run(id=self._run_id, work_item_id=work_item["id"], adapter_type=self._project.agents[0])`
-2. Build CLI command:
-   - `claude` adapter: `["claude", "--project", project.repo_path, "--message", prompt]`
+2. Build CLI command. Map `project.agents[0]` (adapter type stored in config) to the CLI executable:
+
+   | Config value | CLI executable |
+   |---|---|
+   | `"claude-code"` | `claude` |
+   | `"codex"` | `codex` |
+
+   Commands:
+   - `claude-code` adapter: `["claude", "--project", project.repo_path, "--message", prompt]`
    - `codex` adapter: `["codex", "--dir", project.repo_path, prompt]`
    - `prompt` = `f"{work_item['summary']}\n\n{work_item['payload_json']}"` truncated to 4000 chars
+
 3. `proc = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=STDOUT, cwd=project.repo_path)`
-4. Run two concurrent tasks via `asyncio.gather`:
-   - **Output drainer**: reads `proc.stdout` line-by-line, accumulates into a buffer (cap at last 4000 chars); exits when `proc.stdout` returns EOF
-   - **Heartbeat writer**: every `heartbeat_interval_secs`, calls `store.update_agent_run(run_id, heartbeat_at=now_iso())` using `asyncio.wait_for(asyncio.sleep(heartbeat_interval_secs), ...)` — exits when process is done
-5. Wait for process with timeout: `await asyncio.wait_for(proc.wait(), timeout=self._timeout_secs)`
-   - On `asyncio.TimeoutError`: send `SIGTERM`, wait 10s, `SIGKILL` if still running; final status = `'interrupted'`
-   - On `asyncio.CancelledError` (supervisor shutdown cancels the runner task): `proc.terminate()`, wait up to 10s with `asyncio.wait_for(proc.wait(), timeout=10)`, `SIGKILL` if still running; mark `'interrupted'`; then `raise` to propagate cancellation
-   - On normal exit: status = `'done'` if `proc.returncode == 0` else `'failed'`
-6. `await store.update_agent_run(run_id, status=final_status, result_summary=output[-2000:])`
+
+4. Start two concurrent asyncio tasks (do **not** `await` them yet):
+   - **Output drainer task**: reads `proc.stdout` line-by-line, appends each decoded line to a `collections.deque(maxlen=200)` (≈4000 chars at 20 chars/line average); exits when `proc.stdout` returns EOF. Final buffer content is `"\n".join(output_buf)`.
+   - **Heartbeat task**: loops — calls `store.update_agent_run(run_id, heartbeat_at=now_iso())`, then `asyncio.sleep(heartbeat_interval_secs)` wrapped in `asyncio.wait_for` — until cancelled.
+
+5. Wait for the process, handle timeout and cancellation:
+   ```python
+   final_status = "failed"
+   try:
+       await asyncio.wait_for(proc.wait(), timeout=self._timeout_secs)
+       final_status = "done" if proc.returncode == 0 else "failed"
+   except asyncio.TimeoutError:
+       proc.terminate()
+       try:
+           await asyncio.wait_for(proc.wait(), timeout=10)
+       except asyncio.TimeoutError:
+           proc.kill()
+       final_status = "interrupted"
+   except asyncio.CancelledError:
+       proc.terminate()
+       try:
+           await asyncio.wait_for(proc.wait(), timeout=10)
+       except asyncio.TimeoutError:
+           proc.kill()
+       final_status = "interrupted"
+       raise  # re-raise so the task is properly cancelled
+   finally:
+       heartbeat_task.cancel()
+       await asyncio.gather(heartbeat_task, drain_task, return_exceptions=True)
+   ```
+   The `finally` block cancels the heartbeat task and awaits both tasks so all stdout is drained before continuing. `CancelledError` is **re-raised** after cleanup so asyncio's task cancellation propagates correctly.
+
+   Steps 6–9 run **after** the `try/except/finally` block above (they execute on normal exit and on timeout; they do **not** execute when `CancelledError` is re-raised):
+
+6. `await store.update_agent_run(run_id, status=final_status, result_summary="\n".join(output_buf)[-2000:])`
 7. `await store.complete_work_item(work_item["id"], status=final_status)`
-8. Write outbox row — `INSERT INTO outbox` directly via `store._conn` (or a new `insert_outbox_item` Store method): DM to `project.escalation_dm_target` from `acc-{project.identity}`, `message_text` = result summary, `idempotency_key = f"deskbridge:{run_id}:result_notify"`
+8. Write outbox DM — only if `project.escalation_dm_target` is non-empty:
+   ```python
+   if project.escalation_dm_target:
+       identity_id = f"acc-{project.identity}"
+       await store.insert_outbox_item(
+           id=str(uuid4()),
+           identity_id=identity_id,
+           dest_pubkey=project.escalation_dm_target,
+           message_text="\n".join(output_buf)[-2000:],
+           idempotency_key=f"deskbridge:{run_id}:result_notify",
+       )
+   ```
 9. If `work_item["source_type"] == "kanban"` and `work_item["source_id"]` is not None:
    - `session_id = await broker.get_session_id(project.identity)` — if None, log and skip
-   - `await client.call_tool("update_board_card", {"session_id": session_id, "card_id": work_item["source_id"], "description": output[-500:], "idempotency_key": f"deskbridge:{run_id}:board_update"})`
+   - `await client.call_tool("update_board_card", {"session_id": session_id, "card_id": work_item["source_id"], "description": "\n".join(output_buf)[-500:], "idempotency_key": f"deskbridge:{run_id}:board_update"})`
    - On any error: log, do not raise — board update is best-effort
 
-The entire `run()` body is wrapped in `try/except Exception` at the outermost level: on unexpected error, log with `exc_info=True`, call `complete_work_item(id, 'failed')`, and attempt the outbox write.
+The entire `run()` body (steps 1–9) is wrapped in `try/except Exception` at the outermost level: on unexpected error, log with `exc_info=True`, call `complete_work_item(id, 'failed')`, and attempt the outbox write (if `escalation_dm_target` is set).
 
 ---
 
@@ -303,6 +348,7 @@ operator notified via DM
 - Timeout → `interrupted` status, SIGTERM sent
 - Shutdown mid-run → `interrupted`, SIGTERM sent
 - No session for board update → board update skipped, no crash
+- `escalation_dm_target` empty → outbox row not written, no crash
 - Unexpected exception → `failed`, outbox write attempted
 
 **Supervisor tests** (`tests/test_supervisor.py`) — append one test: pollers spawned and cancelled, same pattern as existing DmWatcher/OutboxDrainer test.
@@ -317,7 +363,7 @@ operator notified via DM
 - `update_board_card` is called at most once per run and is best-effort — failure does not affect work item status or DM delivery
 - All loop sleeps use `asyncio.wait_for(shutdown_event.wait(), timeout=N)` — never `asyncio.sleep`
 - Agent subprocess is always killed before `AgentRunner.run()` returns — no orphaned processes on shutdown
-- `AgentRunner` captures only the last 4000 chars of output for the result summary — avoids unbounded memory growth on long-running agents
+- `AgentRunner` uses a `collections.deque(maxlen=200)` to accumulate stdout lines — bounded memory, no post-hoc slicing of a large string
 
 ## Idempotency Key Format
 
