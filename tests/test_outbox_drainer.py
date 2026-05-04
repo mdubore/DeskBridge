@@ -1,6 +1,4 @@
 import asyncio
-import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 from deskbridge.dm.outbox import OutboxDrainer
 from deskbridge.mcp.client import McpToolError
@@ -27,13 +25,14 @@ async def _seed_outbox(conn, *, id, idempotency_key, dest_pubkey="npub1dest",
     await conn.commit()
 
 
-def make_drainer(store, db_conn, *, send_dm_mock, session_id="sess-123",
+def make_drainer(store, *, send_dm_mock, shutdown_event=None, session_id="sess-123",
                  drain_interval=0.01, max_attempts=3):
     mock_client = MagicMock()
     mock_client.call_tool = send_dm_mock
     mock_broker = MagicMock()
     mock_broker.get_session_id = AsyncMock(return_value=session_id)
-    shutdown_event = asyncio.Event()
+    if shutdown_event is None:
+        shutdown_event = asyncio.Event()
     drainer = OutboxDrainer(
         store=store,
         client=mock_client,
@@ -43,19 +42,21 @@ def make_drainer(store, db_conn, *, send_dm_mock, session_id="sess-123",
         drain_interval_secs=drain_interval,
         max_attempts=max_attempts,
     )
-    return drainer, shutdown_event, db_conn
+    return drainer, shutdown_event
 
 
 async def test_outbox_drainer_delivers_message(store, db_conn):
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await _seed_outbox(db_conn, id="ob-1", idempotency_key="k1")
 
+    shutdown_event = asyncio.Event()
+
     async def send_and_stop(tool_name, arguments):
-        drainer._shutdown_event.set()
+        shutdown_event.set()
         return {"delivered": True}
 
-    drainer, shutdown_event, _ = make_drainer(
-        store, db_conn, send_dm_mock=AsyncMock(side_effect=send_and_stop)
+    drainer, _ = make_drainer(
+        store, send_dm_mock=AsyncMock(side_effect=send_and_stop), shutdown_event=shutdown_event
     )
     await drainer.run()
 
@@ -69,15 +70,17 @@ async def test_outbox_drainer_transient_failure_increments(store, db_conn):
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await _seed_outbox(db_conn, id="ob-1", idempotency_key="k1")
 
+    shutdown_event = asyncio.Event()
+
     async def fail_and_stop(tool_name, arguments):
-        drainer._shutdown_event.set()
+        shutdown_event.set()
         raise McpToolError(
             mcp_error=McpError(category=McpErrorCategory.TRANSIENT_TRANSPORT, message="timeout"),
             routing=RoutingDecision.RETRY,
         )
 
-    drainer, shutdown_event, _ = make_drainer(
-        store, db_conn, send_dm_mock=AsyncMock(side_effect=fail_and_stop), max_attempts=3
+    drainer, _ = make_drainer(
+        store, send_dm_mock=AsyncMock(side_effect=fail_and_stop), shutdown_event=shutdown_event, max_attempts=3
     )
     await drainer.run()
 
@@ -91,15 +94,17 @@ async def test_outbox_drainer_last_attempt_marks_failed(store, db_conn):
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await _seed_outbox(db_conn, id="ob-1", idempotency_key="k1", delivery_attempts=2)
 
+    shutdown_event = asyncio.Event()
+
     async def fail_and_stop(tool_name, arguments):
-        drainer._shutdown_event.set()
+        shutdown_event.set()
         raise McpToolError(
             mcp_error=McpError(category=McpErrorCategory.TRANSIENT_TRANSPORT, message="timeout"),
             routing=RoutingDecision.RETRY,
         )
 
-    drainer, shutdown_event, _ = make_drainer(
-        store, db_conn, send_dm_mock=AsyncMock(side_effect=fail_and_stop), max_attempts=3
+    drainer, _ = make_drainer(
+        store, send_dm_mock=AsyncMock(side_effect=fail_and_stop), shutdown_event=shutdown_event, max_attempts=3
     )
     await drainer.run()
 
@@ -113,15 +118,17 @@ async def test_outbox_drainer_reject_marks_failed_immediately(store, db_conn):
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await _seed_outbox(db_conn, id="ob-1", idempotency_key="k1", delivery_attempts=0)
 
+    shutdown_event = asyncio.Event()
+
     async def reject_and_stop(tool_name, arguments):
-        drainer._shutdown_event.set()
+        shutdown_event.set()
         raise McpToolError(
             mcp_error=McpError(category=McpErrorCategory.UNSUPPORTED_STATE, message="nope"),
             routing=RoutingDecision.REJECT,
         )
 
-    drainer, shutdown_event, _ = make_drainer(
-        store, db_conn, send_dm_mock=AsyncMock(side_effect=reject_and_stop), max_attempts=3
+    drainer, _ = make_drainer(
+        store, send_dm_mock=AsyncMock(side_effect=reject_and_stop), shutdown_event=shutdown_event, max_attempts=3
     )
     await drainer.run()
 
