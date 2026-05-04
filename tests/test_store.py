@@ -222,6 +222,14 @@ async def test_get_pending_outbox_items_excludes_exhausted(store: Store, db_conn
     assert rows == []
 
 
+async def test_get_pending_outbox_items_includes_row_below_max(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1", delivery_attempts=2)
+    rows = await store.get_pending_outbox_items(max_attempts=3)
+    assert len(rows) == 1
+    assert rows[0]["id"] == "ob-1"
+
+
 async def test_get_pending_outbox_items_excludes_failed(store: Store, db_conn):
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await _seed_outbox_row(db_conn, id="ob-1", idempotency_key="k1", delivery_status="failed")

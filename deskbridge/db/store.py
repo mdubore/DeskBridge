@@ -208,7 +208,7 @@ class Store:
                 delivery_result_json = ?,
                 delivered_at = CASE WHEN ? = 'delivered'
                                THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                               ELSE NULL END
+                               ELSE delivered_at END
             WHERE id = ?
             """,
             (delivery_status, delivery_result_json, delivery_status, id),
