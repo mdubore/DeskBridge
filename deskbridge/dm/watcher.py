@@ -69,17 +69,25 @@ class DmWatcher:
                         payload_json=json.dumps(msg),
                         idempotency_key=msg["id"],
                     )
-                if messages and result.get("last_message_id"):
-                    after_message_id = result["last_message_id"]
-                    after_created_at = result.get("last_created_at")
-                    await self._store.upsert_cursor(
-                        cursor_type="dm_watcher",
-                        identity_id=self._account_id,
-                        last_entity_id=after_message_id,
-                        last_created_at=after_created_at,
-                        last_imported_at=None,
-                        raw_json=json.dumps(result),
-                    )
+                if messages:
+                    new_cursor_id = result.get("last_message_id")
+                    if new_cursor_id is None:
+                        log.warning(
+                            "dm_watcher_missing_cursor_in_response",
+                            identity=self._identity_label,
+                            message_count=len(messages),
+                        )
+                    else:
+                        after_message_id = new_cursor_id
+                        after_created_at = result.get("last_created_at")
+                        await self._store.upsert_cursor(
+                            cursor_type="dm_watcher",
+                            identity_id=self._account_id,
+                            last_entity_id=after_message_id,
+                            last_created_at=after_created_at,
+                            last_imported_at=None,
+                            raw_json=json.dumps(result),
+                        )
 
             except McpToolError as e:
                 if e.routing == RoutingDecision.REJECT:
@@ -89,8 +97,16 @@ class DmWatcher:
                         message=e.mcp_error.message,
                     )
                     return
-                if e.routing == RoutingDecision.REAUTH:
+                elif e.routing == RoutingDecision.REAUTH:
                     log.warning("dm_watcher_reauth", identity=self._identity_label)
+                elif e.routing == RoutingDecision.RESET_CURSOR:
+                    log.warning(
+                        "dm_watcher_reset_cursor",
+                        identity=self._identity_label,
+                        message=e.mcp_error.message,
+                    )
+                    after_message_id = None
+                    after_created_at = None
                 else:
                     log.error(
                         "dm_watcher_error",

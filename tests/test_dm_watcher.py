@@ -1,6 +1,4 @@
 import asyncio
-import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 from deskbridge.dm.watcher import DmWatcher
 from deskbridge.mcp.client import McpToolError
@@ -127,18 +125,7 @@ async def test_dm_watcher_reject_exits_cleanly(store):
         )
 
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
-    mock_client = MagicMock()
-    mock_client.call_tool = AsyncMock(side_effect=reject)
-    mock_broker = MagicMock()
-    mock_broker.get_session_id = AsyncMock(return_value="sess-123")
-    watcher = DmWatcher(
-        identity_label="alice",
-        store=store,
-        client=mock_client,
-        broker=mock_broker,
-        shutdown_event=shutdown_event,
-        poll_timeout_secs=1,
-    )
+    watcher = make_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=reject))
     await watcher.run()
     assert not shutdown_event.is_set()
 
