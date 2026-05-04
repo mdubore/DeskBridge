@@ -11,6 +11,7 @@ from deskbridge.db.schema import apply_schema
 from deskbridge.db.store import Store, bootstrap_accounts_from_config
 from deskbridge.dm.watcher import DmWatcher
 from deskbridge.dm.outbox import OutboxDrainer
+from deskbridge.agent.poller import WorkItemPoller
 from deskbridge.mcp import McpClient, SessionBroker
 
 log = structlog.get_logger()
@@ -57,6 +58,7 @@ class Supervisor:
 
                 watcher_tasks: list[asyncio.Task] = []
                 drainer_task: asyncio.Task | None = None
+                poller_tasks: list[asyncio.Task] = []
 
                 try:
                     await broker.unlock_all()
@@ -85,6 +87,20 @@ class Supervisor:
                         ).run(),
                         name="outbox_drainer",
                     )
+                    poller_tasks = [
+                        asyncio.create_task(
+                            WorkItemPoller(
+                                identity_label=identity.label,
+                                store=store,
+                                client=client,
+                                broker=broker,
+                                config=self._config,
+                                shutdown_event=self._shutdown_event,
+                            ).run(),
+                            name=f"work_item_poller_{identity.label}",
+                        )
+                        for identity in self._config.identities
+                    ]
 
                     interval = self._config.supervisor.heartbeat_interval_secs
                     while not self._shutdown_event.is_set():
@@ -99,7 +115,7 @@ class Supervisor:
 
                     log.info("supervisor_stopped")
                 finally:
-                    tasks_to_cancel = watcher_tasks + (
+                    tasks_to_cancel = watcher_tasks + poller_tasks + (
                         [drainer_task] if drainer_task is not None else []
                     )
                     for task in tasks_to_cancel:

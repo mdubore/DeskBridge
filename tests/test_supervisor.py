@@ -135,3 +135,44 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
     )
     MockDmWatcher.return_value.run.assert_called_once()
     MockOutboxDrainer.return_value.run.assert_called_once()
+
+
+async def test_supervisor_spawns_and_cancels_poller_tasks(tmp_path, monkeypatch, mock_broker, mock_client_ctx):
+    monkeypatch.setenv("ALICE", "pass")
+    config = make_config(tmp_path)
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller:
+
+        mock_instance = MockMcpClient.return_value
+        mock_instance.connect.return_value = mock_client_ctx
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockWorkItemPoller.assert_called_once_with(
+        identity_label="alice",
+        store=ANY,
+        client=ANY,
+        broker=mock_broker,
+        config=config,
+        shutdown_event=ANY,
+    )
+    MockWorkItemPoller.return_value.run.assert_called_once()
