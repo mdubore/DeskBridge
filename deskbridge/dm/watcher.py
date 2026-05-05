@@ -31,7 +31,6 @@ class DmWatcher:
         self._shutdown_event = shutdown_event
         self._operator_npub = operator_npub
         self._poll_timeout_secs = poll_timeout_secs
-        self._session_id: str | None = None
 
     async def run(self) -> None:
         cursor_row = await self._store.get_cursor(
@@ -44,7 +43,6 @@ class DmWatcher:
 
         while not self._shutdown_event.is_set():
             session_id = await self._broker.get_session_id(self._identity_label)
-            self._session_id = session_id
             if session_id is None:
                 log.debug("dm_watcher_no_session", identity=self._identity_label)
                 try:
@@ -76,7 +74,7 @@ class DmWatcher:
                         )
                         continue
                     intent = parse(msg["content"])
-                    await self._dispatch(intent, msg)
+                    await self._dispatch(intent, msg, session_id=session_id)
 
                 if messages:
                     new_cursor_id = result.get("last_message_id")
@@ -137,7 +135,7 @@ class DmWatcher:
 
         log.info("dm_watcher_stopped", identity=self._identity_label)
 
-    async def _dispatch(self, intent: Intent, msg: dict) -> None:
+    async def _dispatch(self, intent: Intent, msg: dict, session_id: str | None = None) -> None:
         handlers = {
             Intent.TASK: self._handle_task,
             Intent.STATUS: self._handle_status,
@@ -145,9 +143,9 @@ class DmWatcher:
             Intent.APPROVE: self._handle_approve,
             Intent.REJECT: self._handle_reject,
         }
-        await handlers[intent](msg)
+        await handlers[intent](msg, session_id=session_id)
 
-    async def _handle_task(self, msg: dict) -> None:
+    async def _handle_task(self, msg: dict, session_id: str | None = None) -> None:
         try:
             await self._store.upsert_work_item(
                 id=str(uuid.uuid4()),
@@ -161,7 +159,7 @@ class DmWatcher:
         except Exception:
             log.exception("dm_watcher_handle_task_error", identity=self._identity_label)
 
-    async def _handle_status(self, msg: dict) -> None:
+    async def _handle_status(self, msg: dict, session_id: str | None = None) -> None:
         try:
             row = await self._store.get_latest_work_item(self._account_id)
             if row is None:
@@ -178,7 +176,7 @@ class DmWatcher:
         except Exception:
             log.exception("dm_watcher_handle_status_error", identity=self._identity_label)
 
-    async def _handle_cancel(self, msg: dict) -> None:
+    async def _handle_cancel(self, msg: dict, session_id: str | None = None) -> None:
         try:
             row = await self._store.get_latest_dispatched_work_item(self._account_id)
             if row is None:
@@ -196,7 +194,7 @@ class DmWatcher:
         except Exception:
             log.exception("dm_watcher_handle_cancel_error", identity=self._identity_label)
 
-    async def _handle_approve(self, msg: dict) -> None:
+    async def _handle_approve(self, msg: dict, session_id: str | None = None) -> None:
         try:
             row = await self._store.get_pending_approval(self._account_id)
             if row is None:
@@ -205,12 +203,12 @@ class DmWatcher:
                 await self._store.resolve_approval(row["id"], "approved")
                 reply = "Approved."
                 mcp_approval_id = row["mcp_approval_id"]
-                if mcp_approval_id and self._session_id:
+                if mcp_approval_id and session_id:
                     try:
                         await self._client.call_tool(
                             "resolve_approval_request",
                             {
-                                "session_id": self._session_id,
+                                "session_id": session_id,
                                 "request_id": mcp_approval_id,
                                 "decision": "approved",
                             },
@@ -230,7 +228,7 @@ class DmWatcher:
         except Exception:
             log.exception("dm_watcher_handle_approve_error", identity=self._identity_label)
 
-    async def _handle_reject(self, msg: dict) -> None:
+    async def _handle_reject(self, msg: dict, session_id: str | None = None) -> None:
         try:
             row = await self._store.get_pending_approval(self._account_id)
             if row is None:
@@ -239,12 +237,12 @@ class DmWatcher:
                 await self._store.resolve_approval(row["id"], "rejected")
                 reply = "Rejected."
                 mcp_approval_id = row["mcp_approval_id"]
-                if mcp_approval_id and self._session_id:
+                if mcp_approval_id and session_id:
                     try:
                         await self._client.call_tool(
                             "resolve_approval_request",
                             {
-                                "session_id": self._session_id,
+                                "session_id": session_id,
                                 "request_id": mcp_approval_id,
                                 "decision": "rejected",
                             },
