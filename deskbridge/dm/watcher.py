@@ -4,6 +4,7 @@ import uuid
 import structlog
 
 from deskbridge.db.store import Store
+from deskbridge.dm.intent import Intent, parse
 from deskbridge.mcp.client import McpClient, McpToolError
 from deskbridge.mcp.errors import RoutingDecision
 from deskbridge.mcp.session import SessionBroker
@@ -19,6 +20,7 @@ class DmWatcher:
         client: McpClient,
         broker: SessionBroker,
         shutdown_event: asyncio.Event,
+        operator_npub: str | None = None,
         poll_timeout_secs: int = 30,
     ) -> None:
         self._identity_label = identity_label
@@ -27,6 +29,7 @@ class DmWatcher:
         self._client = client
         self._broker = broker
         self._shutdown_event = shutdown_event
+        self._operator_npub = operator_npub
         self._poll_timeout_secs = poll_timeout_secs
 
     async def run(self) -> None:
@@ -60,15 +63,19 @@ class DmWatcher:
                 )
                 messages = result.get("messages", [])
                 for msg in messages:
-                    await self._store.upsert_work_item(
-                        id=str(uuid.uuid4()),
-                        source_type="dm",
-                        source_id=msg["id"],
-                        identity_id=self._account_id,
-                        summary=msg["content"][:200],
-                        payload_json=json.dumps(msg),
-                        idempotency_key=msg["id"],
-                    )
+                    if (
+                        self._operator_npub is None
+                        or msg.get("sender_pubkey") != self._operator_npub
+                    ):
+                        log.debug(
+                            "dm_watcher_unauthorized",
+                            identity=self._identity_label,
+                            sender=msg.get("sender_pubkey"),
+                        )
+                        continue
+                    intent = parse(msg["content"])
+                    await self._dispatch(intent, msg)
+
                 if messages:
                     new_cursor_id = result.get("last_message_id")
                     if new_cursor_id is None:
@@ -127,3 +134,98 @@ class DmWatcher:
                     pass
 
         log.info("dm_watcher_stopped", identity=self._identity_label)
+
+    async def _dispatch(self, intent: Intent, msg: dict) -> None:
+        handlers = {
+            Intent.TASK: self._handle_task,
+            Intent.STATUS: self._handle_status,
+            Intent.CANCEL: self._handle_cancel,
+            Intent.APPROVE: self._handle_approve,
+            Intent.REJECT: self._handle_reject,
+        }
+        await handlers[intent](msg)
+
+    async def _handle_task(self, msg: dict) -> None:
+        try:
+            await self._store.upsert_work_item(
+                id=str(uuid.uuid4()),
+                source_type="dm",
+                source_id=msg["id"],
+                identity_id=self._account_id,
+                summary=msg["content"][:200],
+                payload_json=json.dumps(msg),
+                idempotency_key=msg["id"],
+            )
+        except Exception:
+            log.exception("dm_watcher_handle_task_error", identity=self._identity_label)
+
+    async def _handle_status(self, msg: dict) -> None:
+        try:
+            row = await self._store.get_latest_work_item(self._account_id)
+            if row is None:
+                reply = "No tasks found."
+            else:
+                reply = f"Task [{row['summary']}] is {row['status']}."
+            await self._store.insert_outbox_item(
+                str(uuid.uuid4()),
+                self._account_id,
+                msg["sender_pubkey"],
+                reply,
+                f"status-reply-{msg['id']}",
+            )
+        except Exception:
+            log.exception("dm_watcher_handle_status_error", identity=self._identity_label)
+
+    async def _handle_cancel(self, msg: dict) -> None:
+        try:
+            row = await self._store.get_latest_dispatched_work_item(self._account_id)
+            if row is None:
+                reply = "No active task to cancel."
+            else:
+                await self._store.mark_work_item_cancel_requested(row["id"])
+                reply = f"Cancel requested for task [{row['summary']}]."
+            await self._store.insert_outbox_item(
+                str(uuid.uuid4()),
+                self._account_id,
+                msg["sender_pubkey"],
+                reply,
+                f"cancel-reply-{msg['id']}",
+            )
+        except Exception:
+            log.exception("dm_watcher_handle_cancel_error", identity=self._identity_label)
+
+    async def _handle_approve(self, msg: dict) -> None:
+        try:
+            row = await self._store.get_pending_approval(self._account_id)
+            if row is None:
+                reply = "No pending approval to approve."
+            else:
+                await self._store.resolve_approval(row["id"], "approved")
+                reply = "Approved."
+            await self._store.insert_outbox_item(
+                str(uuid.uuid4()),
+                self._account_id,
+                msg["sender_pubkey"],
+                reply,
+                f"approve-reply-{msg['id']}",
+            )
+        except Exception:
+            log.exception("dm_watcher_handle_approve_error", identity=self._identity_label)
+
+    async def _handle_reject(self, msg: dict) -> None:
+        try:
+            row = await self._store.get_pending_approval(self._account_id)
+            if row is None:
+                reply = "No pending approval to reject."
+            else:
+                await self._store.resolve_approval(row["id"], "rejected")
+                reply = "Rejected."
+            await self._store.insert_outbox_item(
+                str(uuid.uuid4()),
+                self._account_id,
+                msg["sender_pubkey"],
+                reply,
+                f"reject-reply-{msg['id']}",
+            )
+        except Exception:
+            log.exception("dm_watcher_handle_reject_error", identity=self._identity_label)
