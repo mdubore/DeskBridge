@@ -74,6 +74,7 @@ class ApprovalRequestWatcher:
                         scope=None,
                         request_text=None,
                         expires_at=None,
+                        identity_id=self._account_id,
                     )
                     if self._operator_npub:
                         message = (

@@ -148,3 +148,52 @@ async def test_approval_watcher_reject_exits_cleanly(store):
     watcher = make_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=reject))
     await watcher.run()
     assert not shutdown_event.is_set()
+
+
+async def test_approval_watcher_null_work_item_approval_is_visible_to_dm_watcher(store):
+    """Approval with no dispatched work item must still be findable by get_pending_approval."""
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    shutdown_event = asyncio.Event()
+
+    async def one_shot(tool_name, arguments):
+        shutdown_event.set()
+        return {
+            "requests": [_req(id="req-null-wi", description="Risky action")],
+            "last_request_id": "req-null-wi",
+        }
+
+    # No dispatched work item exists — work_item_id will be NULL
+    watcher = make_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=one_shot))
+    await watcher.run()
+
+    # The approval must still be retrievable by get_pending_approval
+    row = await store.get_pending_approval("acc-alice")
+    assert row is not None
+    assert row["mcp_approval_id"] == "req-null-wi"
+    assert row["identity_id"] == "acc-alice"
+
+
+async def test_approval_watcher_idempotent_on_replay(store):
+    """Replaying the same request ID must not create a duplicate approval row."""
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    call_count = 0
+    shutdown_event = asyncio.Event()
+
+    async def two_shot(tool_name, arguments):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            shutdown_event.set()
+        return {
+            "requests": [_req(id="req-replay", description="Replay me")],
+            "last_request_id": "req-replay",
+        }
+
+    watcher = make_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=two_shot))
+    await watcher.run()
+
+    async with store._conn.execute(
+        "SELECT COUNT(*) FROM approvals WHERE mcp_approval_id='req-replay'"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row[0] == 1  # Only one row despite two polls with the same ID

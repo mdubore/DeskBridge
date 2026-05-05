@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS approvals (
     id                  TEXT PRIMARY KEY,
     mcp_approval_id     TEXT,
     work_item_id        TEXT REFERENCES work_items(id),
+    identity_id         TEXT REFERENCES accounts(id),
     action_description  TEXT NOT NULL,
     scope               TEXT,
     request_text        TEXT,
@@ -106,6 +107,9 @@ CREATE TABLE IF NOT EXISTS approvals (
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     resolved_at         TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS approvals_mcp_approval_id_unique
+    ON approvals (mcp_approval_id) WHERE mcp_approval_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS outbox (
     id              TEXT PRIMARY KEY,

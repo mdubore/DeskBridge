@@ -109,15 +109,16 @@ class Store:
         scope: str | None,
         request_text: str | None,
         expires_at: str | None,
+        identity_id: str | None = None,
     ) -> None:
         async with self._conn.execute(
             """
-            INSERT INTO approvals
-                (id, mcp_approval_id, work_item_id, action_description,
+            INSERT OR IGNORE INTO approvals
+                (id, mcp_approval_id, work_item_id, identity_id, action_description,
                  scope, request_text, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (id, mcp_approval_id, work_item_id, action_description,
+            (id, mcp_approval_id, work_item_id, identity_id, action_description,
              scope, request_text, expires_at),
         ):
             pass
@@ -364,11 +365,12 @@ class Store:
         async with self._conn.execute(
             """
             SELECT a.* FROM approvals a
-            JOIN work_items w ON a.work_item_id = w.id
-            WHERE w.identity_id = ? AND a.status = 'pending'
+            LEFT JOIN work_items w ON a.work_item_id = w.id
+            WHERE a.status = 'pending'
+              AND (w.identity_id = ? OR (a.work_item_id IS NULL AND a.identity_id = ?))
             ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1
             """,
-            (identity_id,),
+            (identity_id, identity_id),
         ) as cur:
             return await cur.fetchone()
 
