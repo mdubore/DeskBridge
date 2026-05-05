@@ -10,6 +10,7 @@ from deskbridge.config import DeskBridgeConfig
 from deskbridge.db.schema import apply_schema
 from deskbridge.db.store import Store, bootstrap_accounts_from_config
 from deskbridge.dm.watcher import DmWatcher
+from deskbridge.dm.group_watcher import GroupWatcher
 from deskbridge.dm.outbox import OutboxDrainer
 from deskbridge.agent.poller import WorkItemPoller
 from deskbridge.mcp import McpClient, SessionBroker
@@ -20,7 +21,7 @@ log = structlog.get_logger()
 class Supervisor:
     def __init__(self, config: DeskBridgeConfig) -> None:
         self._config = config
-        self._shutdown_event = asyncio.Event()  # single-use: not reset between run() calls
+        self._shutdown_event = asyncio.Event()
 
     def request_shutdown(self) -> None:
         log.info("shutdown_requested")
@@ -57,6 +58,7 @@ class Supervisor:
                         loop.add_signal_handler(sig, self.request_shutdown)
 
                 watcher_tasks: list[asyncio.Task] = []
+                group_watcher_tasks: list[asyncio.Task] = []
                 drainer_task: asyncio.Task | None = None
                 poller_tasks: list[asyncio.Task] = []
 
@@ -72,6 +74,7 @@ class Supervisor:
                                 client=client,
                                 broker=broker,
                                 shutdown_event=self._shutdown_event,
+                                operator_npub=identity.operator_npub,
                             ).run(),
                             name=f"dm_watcher_{identity.label}",
                         )
@@ -101,6 +104,24 @@ class Supervisor:
                         )
                         for identity in self._config.identities
                     ]
+                    for identity in self._config.identities:
+                        groups = await store.get_project_groups(f"acc-{identity.label}")
+                        if groups:
+                            group_watcher_tasks.append(
+                                asyncio.create_task(
+                                    GroupWatcher(
+                                        identity_label=identity.label,
+                                        identity_npub=identity.npub,
+                                        operator_npub=identity.operator_npub,
+                                        group_ids=groups,
+                                        store=store,
+                                        client=client,
+                                        broker=broker,
+                                        shutdown_event=self._shutdown_event,
+                                    ).run(),
+                                    name=f"group_watcher_{identity.label}",
+                                )
+                            )
 
                     interval = self._config.supervisor.heartbeat_interval_secs
                     while not self._shutdown_event.is_set():
@@ -115,8 +136,11 @@ class Supervisor:
 
                     log.info("supervisor_stopped")
                 finally:
-                    tasks_to_cancel = watcher_tasks + poller_tasks + (
-                        [drainer_task] if drainer_task is not None else []
+                    tasks_to_cancel = (
+                        watcher_tasks
+                        + group_watcher_tasks
+                        + poller_tasks
+                        + ([drainer_task] if drainer_task is not None else [])
                     )
                     for task in tasks_to_cancel:
                         task.cancel()

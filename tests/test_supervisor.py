@@ -73,9 +73,14 @@ async def test_supervisor_calls_refresh_on_heartbeat(tmp_path, monkeypatch, mock
     with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
          patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
          patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
-         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()):
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.Store") as MockStore:
         mock_instance = MockMcpClient.return_value
         mock_instance.connect.return_value = mock_client_ctx
+
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
 
@@ -101,7 +106,9 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
          patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
          patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
          patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
-         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller:
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.GroupWatcher") as MockGroupWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
 
         mock_instance = MockMcpClient.return_value
         mock_instance.connect.return_value = mock_client_ctx
@@ -112,6 +119,10 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
         MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
         MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
         MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
 
@@ -127,6 +138,7 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
         client=ANY,
         broker=mock_broker,
         shutdown_event=ANY,
+        operator_npub=None,
     )
     MockOutboxDrainer.assert_called_once_with(
         store=ANY,
@@ -149,7 +161,9 @@ async def test_supervisor_spawns_and_cancels_poller_tasks(tmp_path, monkeypatch,
          patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
          patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
          patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
-         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller:
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.GroupWatcher") as MockGroupWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
 
         mock_instance = MockMcpClient.return_value
         mock_instance.connect.return_value = mock_client_ctx
@@ -160,6 +174,10 @@ async def test_supervisor_spawns_and_cancels_poller_tasks(tmp_path, monkeypatch,
         MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
         MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
         MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
 
@@ -178,3 +196,94 @@ async def test_supervisor_spawns_and_cancels_poller_tasks(tmp_path, monkeypatch,
         shutdown_event=ANY,
     )
     MockWorkItemPoller.return_value.run.assert_called_once()
+
+
+async def test_supervisor_spawns_group_watcher_when_groups_configured(tmp_path, monkeypatch, mock_broker, mock_client_ctx):
+    monkeypatch.setenv("ALICE", "pass")
+    config = make_config(tmp_path)
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.GroupWatcher") as MockGroupWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
+
+        mock_instance = MockMcpClient.return_value
+        mock_instance.connect.return_value = mock_client_ctx
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+        MockGroupWatcher.return_value.run = Mock(side_effect=never_finishes)
+
+        # get_project_groups returns a non-empty list so GroupWatcher is spawned
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=["grp-1"])
+        MockStore.return_value = mock_store_instance
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockGroupWatcher.assert_called_once_with(
+        identity_label="alice",
+        identity_npub="npub1alice",
+        operator_npub=None,
+        group_ids=["grp-1"],
+        store=ANY,
+        client=ANY,
+        broker=mock_broker,
+        shutdown_event=ANY,
+    )
+    MockGroupWatcher.return_value.run.assert_called_once()
+
+
+async def test_supervisor_no_group_watcher_when_no_groups(tmp_path, monkeypatch, mock_broker, mock_client_ctx):
+    monkeypatch.setenv("ALICE", "pass")
+    config = make_config(tmp_path)
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.GroupWatcher") as MockGroupWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
+
+        mock_instance = MockMcpClient.return_value
+        mock_instance.connect.return_value = mock_client_ctx
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+
+        # get_project_groups returns empty — no GroupWatcher should be spawned
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        MockStore.return_value = mock_store_instance
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockGroupWatcher.assert_not_called()
