@@ -15,11 +15,11 @@ class ApprovalRequestWatcher:
     def __init__(
         self,
         identity_label: str,
-        operator_npub: str | None,
         store: Store,
         client: McpClient,
         broker: SessionBroker,
         shutdown_event: asyncio.Event,
+        operator_npub: str | None = None,
         poll_timeout_secs: int = 30,
     ) -> None:
         self._identity_label = identity_label
@@ -59,11 +59,13 @@ class ApprovalRequestWatcher:
                     },
                 )
                 requests = result.get("requests", [])
-                for req in requests:
+                work_item_id = None
+                if requests:
                     dispatched = await self._store.get_latest_dispatched_work_item(
                         self._account_id
                     )
                     work_item_id = dispatched["id"] if dispatched else None
+                for req in requests:
                     await self._store.insert_approval(
                         id=str(uuid.uuid4()),
                         mcp_approval_id=req["id"],
@@ -89,7 +91,13 @@ class ApprovalRequestWatcher:
 
                 if requests:
                     new_cursor_id = result.get("last_request_id")
-                    if new_cursor_id:
+                    if new_cursor_id is None:
+                        log.warning(
+                            "approval_watcher_missing_cursor_in_response",
+                            identity=self._identity_label,
+                            request_count=len(requests),
+                        )
+                    else:
                         after_request_id = new_cursor_id
                         await self._store.upsert_cursor(
                             cursor_type="approval_watcher",
