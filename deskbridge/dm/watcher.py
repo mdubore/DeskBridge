@@ -31,6 +31,7 @@ class DmWatcher:
         self._shutdown_event = shutdown_event
         self._operator_npub = operator_npub
         self._poll_timeout_secs = poll_timeout_secs
+        self._session_id: str | None = None
 
     async def run(self) -> None:
         cursor_row = await self._store.get_cursor(
@@ -43,6 +44,7 @@ class DmWatcher:
 
         while not self._shutdown_event.is_set():
             session_id = await self._broker.get_session_id(self._identity_label)
+            self._session_id = session_id
             if session_id is None:
                 log.debug("dm_watcher_no_session", identity=self._identity_label)
                 try:
@@ -202,6 +204,22 @@ class DmWatcher:
             else:
                 await self._store.resolve_approval(row["id"], "approved")
                 reply = "Approved."
+                mcp_approval_id = row["mcp_approval_id"]
+                if mcp_approval_id and self._session_id:
+                    try:
+                        await self._client.call_tool(
+                            "resolve_approval_request",
+                            {
+                                "session_id": self._session_id,
+                                "request_id": mcp_approval_id,
+                                "decision": "approved",
+                            },
+                        )
+                    except Exception:
+                        log.exception(
+                            "dm_watcher_resolve_approval_error",
+                            identity=self._identity_label,
+                        )
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
                 self._account_id,
@@ -220,6 +238,22 @@ class DmWatcher:
             else:
                 await self._store.resolve_approval(row["id"], "rejected")
                 reply = "Rejected."
+                mcp_approval_id = row["mcp_approval_id"]
+                if mcp_approval_id and self._session_id:
+                    try:
+                        await self._client.call_tool(
+                            "resolve_approval_request",
+                            {
+                                "session_id": self._session_id,
+                                "request_id": mcp_approval_id,
+                                "decision": "rejected",
+                            },
+                        )
+                    except Exception:
+                        log.exception(
+                            "dm_watcher_resolve_approval_error",
+                            identity=self._identity_label,
+                        )
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
                 self._account_id,
