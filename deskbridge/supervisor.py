@@ -11,6 +11,7 @@ from deskbridge.db.schema import apply_schema
 from deskbridge.db.store import Store, bootstrap_accounts_from_config
 from deskbridge.dm.watcher import DmWatcher
 from deskbridge.dm.group_watcher import GroupWatcher
+from deskbridge.dm.approval_watcher import ApprovalRequestWatcher
 from deskbridge.dm.outbox import OutboxDrainer
 from deskbridge.agent.poller import WorkItemPoller
 from deskbridge.mcp import McpClient, SessionBroker
@@ -59,6 +60,7 @@ class Supervisor:
 
                 watcher_tasks: list[asyncio.Task] = []
                 group_watcher_tasks: list[asyncio.Task] = []
+                approval_watcher_tasks: list[asyncio.Task] = []
                 drainer_task: asyncio.Task | None = None
                 poller_tasks: list[asyncio.Task] = []
 
@@ -77,6 +79,20 @@ class Supervisor:
                                 operator_npub=identity.operator_npub,
                             ).run(),
                             name=f"dm_watcher_{identity.label}",
+                        )
+                        for identity in self._config.identities
+                    ]
+                    approval_watcher_tasks = [
+                        asyncio.create_task(
+                            ApprovalRequestWatcher(
+                                identity_label=identity.label,
+                                operator_npub=identity.operator_npub,
+                                store=store,
+                                client=client,
+                                broker=broker,
+                                shutdown_event=self._shutdown_event,
+                            ).run(),
+                            name=f"approval_watcher_{identity.label}",
                         )
                         for identity in self._config.identities
                     ]
@@ -139,6 +155,7 @@ class Supervisor:
                     tasks_to_cancel = (
                         watcher_tasks
                         + group_watcher_tasks
+                        + approval_watcher_tasks
                         + poller_tasks
                         + ([drainer_task] if drainer_task is not None else [])
                     )
