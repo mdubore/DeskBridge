@@ -171,3 +171,52 @@ async def test_poller_completes_work_item_when_project_config_missing():
     await asyncio.gather(poller.run(), stop())
 
     store.complete_work_item.assert_awaited_once_with("wi-1", "failed")
+
+
+async def test_poller_cancels_runner_when_work_item_cancel_requested():
+    store = MagicMock()
+    project_row = _row(id="proj-1")
+    cancel_work_item_row = _row(
+        id="wi-1", status="cancel_requested", summary="fix auth bug"
+    )
+
+    async def fake_get_work_item(id):
+        return cancel_work_item_row
+
+    store.get_project_for_identity = AsyncMock(return_value=project_row)
+    store.get_pending_work_items = AsyncMock(return_value=[])
+    store.get_work_item = AsyncMock(side_effect=fake_get_work_item)
+    store.complete_work_item = AsyncMock()
+
+    config = make_config()
+    mock_client = MagicMock()
+    mock_broker = MagicMock()
+    mock_broker.get_session_id = AsyncMock(return_value="sess-1")
+    shutdown_event = asyncio.Event()
+
+    poller = WorkItemPoller(
+        identity_label="alice",
+        store=store,
+        client=mock_client,
+        broker=mock_broker,
+        config=config,
+        shutdown_event=shutdown_event,
+        poll_interval_secs=0.01,
+    )
+
+    # Inject an active (never-finishing) task and its work item ID
+    async def never_finishes():
+        await asyncio.Event().wait()
+
+    poller._active_run_task = asyncio.create_task(never_finishes())
+    poller._active_work_item_id = "wi-1"
+
+    async def stop():
+        await asyncio.sleep(0.05)
+        shutdown_event.set()
+
+    await asyncio.gather(poller.run(), stop())
+
+    store.complete_work_item.assert_awaited_once_with("wi-1", "cancelled")
+    assert poller._active_run_task is None
+    assert poller._active_work_item_id is None

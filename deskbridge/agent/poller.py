@@ -31,6 +31,7 @@ class WorkItemPoller:
         self._shutdown_event = shutdown_event
         self._poll_interval_secs = poll_interval_secs
         self._active_run_task: asyncio.Task | None = None
+        self._active_work_item_id: str | None = None
 
     async def run(self) -> None:
         log.info("work_item_poller_started", identity=self._identity_label)
@@ -50,6 +51,26 @@ class WorkItemPoller:
             log.info("work_item_poller_stopped", identity=self._identity_label)
 
     async def _poll_once(self) -> None:
+        # Clear finished runner
+        if self._active_run_task is not None and self._active_run_task.done():
+            self._active_run_task = None
+            self._active_work_item_id = None
+
+        # Cancel runner if operator requested cancellation
+        if (
+            self._active_run_task is not None
+            and not self._active_run_task.done()
+            and self._active_work_item_id is not None
+        ):
+            row = await self._store.get_work_item(self._active_work_item_id)
+            if row is not None and row["status"] == "cancel_requested":
+                self._active_run_task.cancel()
+                await asyncio.gather(self._active_run_task, return_exceptions=True)
+                await self._store.complete_work_item(self._active_work_item_id, "cancelled")
+                self._active_run_task = None
+                self._active_work_item_id = None
+                return
+
         project = await self._store.get_project_for_identity(self._account_id)
         if project is None:
             log.warning("work_item_poller_no_project", identity=self._identity_label)
@@ -94,4 +115,5 @@ class WorkItemPoller:
             self._active_run_task = asyncio.create_task(
                 runner.run(), name=f"agent_run_{row['id']}"
             )
+            self._active_work_item_id = row["id"]
             break

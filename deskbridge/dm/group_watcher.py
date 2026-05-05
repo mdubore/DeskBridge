@@ -125,6 +125,14 @@ class GroupWatcher:
                     return
                 elif e.routing == RoutingDecision.REAUTH:
                     log.warning("group_watcher_reauth", identity=self._identity_label)
+                elif e.routing == RoutingDecision.RESET_CURSOR:
+                    log.warning(
+                        "group_watcher_reset_cursor",
+                        identity=self._identity_label,
+                        message=e.mcp_error.message,
+                    )
+                    after_message_id = None
+                    after_created_at = None
                 else:
                     log.error(
                         "group_watcher_error",
