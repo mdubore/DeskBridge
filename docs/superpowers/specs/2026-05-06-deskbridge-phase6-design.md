@@ -79,6 +79,7 @@ When an agent calls a protected MCP tool, NostrDesk creates a `permission_reques
 | `deskbridge/dm/approval_watcher.py` | Modify | Replace long-poll with interval-poll; remove cursor logic; add row validation; Unix timestamp conversion |
 | `deskbridge/dm/watcher.py` | Modify | Swap `resolve_approval_request` → `respond_to_approval`; conditional local DB resolution; per-category operator reply |
 | `deskbridge/agent/runner.py` | Modify | Prepend `_APPROVAL_INSTRUCTION` constant to agent prompt |
+| `deskbridge/models.py` | Modify | Add `data: dict | None` field to `McpError`; preserve raw category string alongside enum |
 | `deskbridge/mcp/errors.py` | Modify | Expose `category` and `data` from structured MCP error payload |
 | `deskbridge/mcp/client.py` | Modify | Catch SDK-raised exceptions with `.data`; convert to `McpToolError` |
 | `tests/test_approval_watcher.py` | Modify | Update mocks; remove cursor tests; add dedup, malformed-row, timestamp, and payload-safety tests |
@@ -92,6 +93,28 @@ No changes to `schema.py`, `store.py`, or `supervisor.py`.
 ---
 
 ## Component Design
+
+### `deskbridge/models.py`
+
+`McpError` gains a `raw_category: str | None` field to preserve the exact category string from NostrDesk even when it is not a known `McpErrorCategory` enum value:
+
+```python
+class McpError(BaseModel):
+    category: McpErrorCategory       # enum; unknown strings map to INTERNAL_ERROR
+    raw_category: str | None = None  # exact string from error payload, e.g. "approval_expired"
+    message: str
+    approval_request_id: str | None = None
+    data: dict | None = None         # full error.data dict
+```
+
+In `from_tool_result_text`, after extracting `raw_category = err.get("category", "internal_error")`:
+- Set `raw_category` on the model unconditionally
+- Map to `category` enum via `McpErrorCategory(raw_category)` with fallback to `INTERNAL_ERROR`
+- Set `data = err.get("data") if isinstance(err.get("data"), dict) else None`
+
+Callers in `DmWatcher` must use `e.mcp_error.raw_category` (not `e.mcp_error.category`) to check for NostrDesk-specific categories like `"approval_expired"`, since those are not in `McpErrorCategory` and would otherwise appear as `INTERNAL_ERROR`.
+
+---
 
 ### `deskbridge/mcp/errors.py` and `deskbridge/mcp/client.py`
 
@@ -282,6 +305,12 @@ The approval instruction is never truncated. The truncation guard applies only t
 
 ---
 
+### `deskbridge/dm/group_watcher.py` — no change
+
+Approval commands (`approve` / `reject`) are DM-only in Phase 6. `GroupWatcher` handles @mention-routed messages and does not parse approval intents. An operator who sends "approve" as a group @mention will receive no response from DeskBridge; the pending approval will remain open until resolved via DM. This constraint is intentional: approval decisions are sensitive and should go through the authenticated operator DM channel, not a group chat where other participants may be present. No changes to `GroupWatcher` in this phase.
+
+---
+
 ## End-to-End Flow
 
 ```
@@ -306,9 +335,10 @@ Agent (if still waiting) retries and succeeds
 
 **Recovery path (NostrDesk internal wait timed out before operator responded):**
 - Agent received `approval_required` error, waited 60s, retried — still failed if operator hadn't responded
-- Agent reports and stops
-- DeskBridge still calls `respond_to_approval` when the operator eventually replies
-- Local approval resolved; operator re-triggers the task knowing the next run will succeed
+- Agent reports the failure and stops the run
+- The specific `permission_requests` row in NostrDesk may be expired by the time the operator responds; if so, DeskBridge's `respond_to_approval` call returns `approval_expired` and local approval is marked terminal
+- Late approval does not grant persistent or future authorization — it only resolves the specific request row it was created for
+- To proceed, the operator re-triggers the task; the agent calls the protected tool again, which creates a new approval request, and DeskBridge handles it from the start
 
 ---
 
@@ -361,6 +391,14 @@ MCP error parser tests covering both error paths.
 - Text with `error.data` as a non-dict string → `category is None`, `data is None`
 - Text with no `error.data` field → `category is None`, `data is None`
 - Text with `error.data` as `{}` (empty dict) → `category is None`, `data == {}`
+
+**`McpError` model — category preservation**
+
+- `from_tool_result_text` with `error.category = "approval_expired"` (not in `McpErrorCategory`): `mcp_error.category == McpErrorCategory.INTERNAL_ERROR`, `mcp_error.raw_category == "approval_expired"` — raw string preserved even though enum falls back
+- `from_tool_result_text` with `error.category = "invalid_session"` (known enum value): `mcp_error.category == McpErrorCategory.INVALID_SESSION`, `mcp_error.raw_category == "invalid_session"`
+- `from_tool_result_text` with no `error.category` key: `mcp_error.category == McpErrorCategory.INTERNAL_ERROR`, `mcp_error.raw_category == "internal_error"` (the default)
+- `from_tool_result_text` with `error.data` as a dict: `mcp_error.data == {"category": "...", ...}`
+- `from_tool_result_text` with `error.data` as a non-dict: `mcp_error.data is None`
 
 **Path 2: SDK-raised exception with `.data`**
 
