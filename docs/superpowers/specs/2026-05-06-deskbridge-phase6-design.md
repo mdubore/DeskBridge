@@ -80,6 +80,7 @@ When an agent calls a protected MCP tool, NostrDesk creates a `permission_reques
 | `deskbridge/dm/watcher.py` | Modify | Swap `resolve_approval_request` → `respond_to_approval`; conditional local DB resolution; per-category operator reply |
 | `deskbridge/agent/runner.py` | Modify | Prepend `_APPROVAL_INSTRUCTION` constant to agent prompt |
 | `deskbridge/mcp/errors.py` | Modify | Expose `category` and `data` from structured MCP error payload |
+| `deskbridge/mcp/client.py` | Modify | Catch SDK-raised exceptions with `.data`; convert to `McpToolError` |
 | `tests/test_approval_watcher.py` | Modify | Update mocks; remove cursor tests; add dedup, malformed-row, timestamp, and payload-safety tests |
 | `tests/test_dm_watcher.py` | Modify | Update tool assertions; add per-error-category reply and local-resolution tests |
 | `tests/test_mcp_errors.py` | Create | MCP error parser tests using NostrDesk-style structured error objects |
@@ -92,22 +93,54 @@ No changes to `schema.py`, `store.py`, or `supervisor.py`.
 
 ## Component Design
 
-### `deskbridge/mcp/errors.py`
+### `deskbridge/mcp/errors.py` and `deskbridge/mcp/client.py`
 
-`McpToolError` must expose `category` and the full `data` dict from structured MCP error payloads so callers can distinguish NostrDesk-specific error categories and read fields like `status` and `approval_request_id` without string-matching on `message`.
+MCP tool errors surface through two distinct paths. Both must produce a `McpToolError` with `category` and `data` populated from NostrDesk's structured error payload.
 
-Add two attributes populated from `error.data` when present:
+**Path 1: `CallToolResult.isError`**
+
+The MCP session returns normally but `result.isError = True`. `McpClient.call_tool` already handles this path. The text content is parsed via `McpError.from_tool_result_text`. That parser must also extract `error.data` when present:
 
 ```python
-@dataclass
-class McpToolError(Exception):
-    mcp_error: ...
-    routing: RoutingDecision
-    category: str | None = None   # from error.data["category"]
-    data: dict | None = None      # full error.data dict; None if absent or not a dict
+# In McpError.from_tool_result_text — existing error dict shape:
+# {"error": {"category": "...", "message": "...", "data": {"category": "...", "status": "..."}}}
+# Extract err["data"] as the structured payload dict.
 ```
 
-When parsing a tool error response, if `error.data` is a dict, set `data = error.data` and `category = error.data.get("category")`. If `error.data` is absent or not a dict, both remain `None`.
+`McpToolError` gains two new attributes:
+
+```python
+class McpToolError(Exception):
+    def __init__(self, mcp_error: McpError, routing: RoutingDecision,
+                 category: str | None = None, data: dict | None = None) -> None:
+        ...
+        self.category = category   # NostrDesk-specific category string, e.g. "approval_expired"
+        self.data = data           # full error.data dict; None if absent or not a dict
+```
+
+`category` is populated from `data["category"]` when `data` is a dict. If `data` is absent or not a dict, both remain `None`.
+
+**Path 2: SDK-raised exception with `.data`**
+
+The MCP SDK may raise its own exception (e.g. before returning a result) that carries a `.data` attribute — a dict containing `category`, `approval_request_id`, `status`, etc. This path is currently uncaught.
+
+`McpClient.call_tool` must wrap the `session.call_tool` call to catch these:
+
+```python
+try:
+    result = await self._session.call_tool(tool_name, arguments)
+except Exception as e:
+    sdk_data = getattr(e, "data", None)
+    if isinstance(sdk_data, dict):
+        category = sdk_data.get("category")
+        raw_cat = McpErrorCategory(category) if category in McpErrorCategory._value2member_map_ else McpErrorCategory.INTERNAL_ERROR
+        mcp_error = McpError(category=raw_cat, message=str(e))
+        routing = route_mcp_error(mcp_error)
+        raise McpToolError(mcp_error=mcp_error, routing=routing, category=category, data=sdk_data) from e
+    raise  # re-raise non-structured SDK exceptions unchanged
+```
+
+The catch must only intercept exceptions that carry a structured `.data` dict. Plain SDK errors without `.data` (network failures, timeouts) are re-raised unchanged so existing error handling upstream continues to work.
 
 ---
 
@@ -153,7 +186,12 @@ When parsing a tool error response, if `error.data` is a dict, set `data = error
    Call `store.insert_outbox_item(..., idempotency_key=f"approval-notify-{req['id']}")`. `INSERT OR IGNORE` on `idempotency_key` ensures exactly one operator DM per approval regardless of poll frequency.
 6. Sleep `poll_interval_secs` using `asyncio.wait_for(self._shutdown_event.wait(), timeout=self._poll_interval_secs)` with `except asyncio.TimeoutError: pass`.
 
-**`request_payload_json` is never included in the operator DM.** When `display_payload_json` is absent, the operator DM shows `"(details unavailable)"`. The raw `request_payload_json` may be stored in `action_description` for internal logging but must not appear in outbox messages.
+**`request_payload_json` storage rules:**
+- MAY be stored in `approvals.request_text` for internal reference
+- MUST NOT appear in `action_description` — this field feeds the operator DM format
+- MUST NOT appear in any outbox `message_text`
+
+When `display_payload_json` is absent, the operator DM shows `"(details unavailable)"`. `request_payload_json` is stored in `insert_approval`'s `request_text` parameter only.
 
 **Removed:** all cursor load/save/warning logic. `list_pending_approvals` is a snapshot; there is no cursor.
 
@@ -290,7 +328,10 @@ New tests:
 - Row missing `display_payload_json` → operator DM shows `"(details unavailable)"`; `request_payload_json` not present in outbox message
 - `expires_at` as Unix integer → stored as ISO 8601 string in `approvals.expires_at`
 - `expires_at` absent → stored as `None`
-- Regression: when `display_payload_json` is absent and `request_payload_json` is `'{"amount": 1000, "dest": "abc"}'`, assert the outbox `message_text` contains neither `"amount"` nor `"dest"` nor `"abc"` — `request_payload_json` must never leak into operator DMs
+- Regression: when `display_payload_json` is absent and `request_payload_json` is `'{"amount": 1000, "dest": "abc"}'`:
+  - Assert `approvals.request_text` contains the `request_payload_json` value (the one permitted storage location)
+  - Assert `approvals.action_description` does not contain `"amount"`, `"dest"`, or `"abc"`
+  - Assert outbox `message_text` does not contain `"amount"`, `"dest"`, or `"abc"`
 
 Keep: no session skips poll; REJECT exits; operator DM written when `operator_npub` set; unexpected exception logs and continues.
 
@@ -311,13 +352,22 @@ Keep: MCP failure still sends outbox reply in all cases.
 
 ### `tests/test_mcp_errors.py` (new file)
 
-MCP error parser tests using full NostrDesk-style error objects:
+MCP error parser tests covering both error paths.
 
-- Error with `{"data": {"category": "approval_expired", "approval_request_id": "req-abc", "status": "pending"}}` → `McpToolError.category == "approval_expired"`, `McpToolError.data["approval_request_id"] == "req-abc"`, `McpToolError.data["status"] == "pending"`
-- Error with `{"data": {"category": "approval_already_resolved", "status": "denied"}}` → `category == "approval_already_resolved"`, `data["status"] == "denied"`
-- Error with `{"data": "not-a-dict"}` → `category is None`, `data is None`
-- Error with no `data` field → `category is None`, `data is None`
-- Error with `{"data": {}}` (empty dict, no `category` key) → `category is None`, `data == {}`
+**Path 1: `CallToolResult.isError` text content**
+
+- Text `'{"error": {"category": "approval_required", "message": "...", "data": {"category": "approval_expired", "approval_request_id": "req-abc", "status": "pending"}}}'` → `McpToolError.category == "approval_expired"`, `McpToolError.data["approval_request_id"] == "req-abc"`, `McpToolError.data["status"] == "pending"`
+- Text with `error.data` containing `{"category": "approval_already_resolved", "status": "denied"}` → `category == "approval_already_resolved"`, `data["status"] == "denied"`
+- Text with `error.data` as a non-dict string → `category is None`, `data is None`
+- Text with no `error.data` field → `category is None`, `data is None`
+- Text with `error.data` as `{}` (empty dict) → `category is None`, `data == {}`
+
+**Path 2: SDK-raised exception with `.data`**
+
+- SDK exception where `e.data = {"category": "approval_expired", "approval_request_id": "req-abc", "status": "pending"}` → `McpClient.call_tool` raises `McpToolError` with `category == "approval_expired"`, `data["approval_request_id"] == "req-abc"`
+- SDK exception where `e.data = {"category": "approval_already_resolved", "status": "denied"}` → `McpToolError.category == "approval_already_resolved"`, `data["status"] == "denied"`
+- SDK exception where `e.data` is absent → exception is re-raised as-is (not converted to `McpToolError`)
+- SDK exception where `e.data` is a non-dict → exception is re-raised as-is
 
 ### `tests/test_agent_runner.py`
 
@@ -353,6 +403,23 @@ async def test_approval_round_trip():
     #   session_id="session-123", approval_request_id="req-abc", approved=True, note=None
     # Assert: store.resolve_approval called with "approved"
     # Assert: outbox reply says "Approved."
+```
+
+**SDK exception terminal path test:**
+
+```python
+async def test_approval_sdk_exception_terminal():
+    # Fake MCP client: respond_to_approval raises an SDK exception where
+    #   e.data = {"category": "approval_expired", "approval_request_id": "req-abc"}
+    # (not a CallToolResult.isError — a genuine SDK exception with .data)
+
+    # Simulate operator "approve" DM → DmWatcher._handle_approve
+    # Assert: McpToolError raised with category="approval_expired"
+    # Assert: DeskBridge handles it as approval_expired (terminal):
+    #   - store.resolve_approval called with "rejected"
+    #   - dm_watcher_approval_expired logged at warning
+    #   - outbox reply says "already resolved or expired"
+    # Assert: local approval is NOT left pending (i.e. not treated as unknown/internal error)
 ```
 
 ---
