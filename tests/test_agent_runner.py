@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from deskbridge.agent.runner import AgentRunner
+from deskbridge.agent.runner import AgentRunner, _APPROVAL_INSTRUCTION
 from deskbridge.config import ProjectConfig
 
 PROJ = ProjectConfig(
@@ -225,3 +225,58 @@ async def test_runner_unexpected_exception_marks_failed():
         await runner.run()  # must not raise
 
     store.complete_work_item.assert_awaited_once_with("wi-1", "failed")
+
+
+async def test_runner_prompt_starts_with_approval_instruction():
+    work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
+                     summary="do the thing", payload_json='{"x": 1}')
+    store = make_store()
+    proc = make_proc(returncode=0, stdout_lines=[b"done\n"])
+
+    captured_cmd = []
+
+    def capture_exec(*args, **kwargs):
+        captured_cmd.extend(args)
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capture_exec):
+        runner = make_runner(work_item, store=store)
+        await runner.run()
+
+    cmd = list(captured_cmd)
+    msg_idx = cmd.index("--message")
+    prompt = cmd[msg_idx + 1]
+
+    assert prompt.startswith(_APPROVAL_INSTRUCTION)
+    assert len(prompt) <= 4000
+
+
+async def test_runner_prompt_instruction_not_truncated_on_long_task():
+    long_payload = "x" * 4000
+    work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
+                     summary="long task", payload_json=long_payload)
+    store = make_store()
+    proc = make_proc(returncode=0, stdout_lines=[b"done\n"])
+
+    captured_cmd = []
+
+    def capture_exec(*args, **kwargs):
+        captured_cmd.extend(args)
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capture_exec):
+        runner = make_runner(work_item, store=store)
+        await runner.run()
+
+    cmd = list(captured_cmd)
+    msg_idx = cmd.index("--message")
+    prompt = cmd[msg_idx + 1]
+
+    instruction_len = len(_APPROVAL_INSTRUCTION)
+    max_task_len = 4000 - instruction_len
+    task_portion = prompt[instruction_len:]
+    expected_task = f"long task\n\n{long_payload}"[:max_task_len]
+
+    assert len(prompt) == 4000
+    assert prompt[:instruction_len] == _APPROVAL_INSTRUCTION
+    assert task_portion == expected_task

@@ -11,6 +11,13 @@ from deskbridge.mcp.session import SessionBroker
 
 log = structlog.get_logger()
 
+_APPROVAL_INSTRUCTION = (
+    'If any MCP tool returns an error with category "approval_required", '
+    "do not stop. Wait 60 seconds and retry the same tool call — a human "
+    "operator has been notified and will decide shortly. "
+    "If retrying still fails, report the error clearly and stop.\n\n"
+)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -74,7 +81,8 @@ class AgentRunner:
 
         # 2. Build CLI command
         adapter = project.agents[0]
-        prompt = f"{work_item['summary']}\n\n{work_item['payload_json']}"[:4000]
+        task_text = f"{work_item['summary']}\n\n{work_item['payload_json']}"
+        prompt = _APPROVAL_INSTRUCTION + task_text[:4000 - len(_APPROVAL_INSTRUCTION)]
         if adapter == "claude-code":
             cmd = ["claude", "--project", project.repo_path, "--message", prompt]
         else:
