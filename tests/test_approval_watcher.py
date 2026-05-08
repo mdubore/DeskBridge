@@ -92,28 +92,17 @@ async def test_approval_watcher_empty_response_no_insert(store):
 
 async def test_approval_watcher_no_session_skips_poll(store):
     shutdown_event = asyncio.Event()
-    mock_client = MagicMock()
-    mock_client.call_tool = AsyncMock()
-    mock_broker = MagicMock()
-    mock_broker.get_session_id = AsyncMock(return_value=None)
 
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
-    watcher = ApprovalRequestWatcher(
-        identity_label="alice",
-        operator_npub=OPERATOR_NPUB,
-        store=store,
-        client=mock_client,
-        broker=mock_broker,
-        shutdown_event=shutdown_event,
-        poll_interval_secs=0.05,
-    )
+    mock_call = AsyncMock()
+    watcher = make_watcher(store, shutdown_event, call_tool_mock=mock_call, session_id=None)
 
     async def stop():
         await asyncio.sleep(0.05)
         shutdown_event.set()
 
     await asyncio.gather(watcher.run(), stop())
-    mock_client.call_tool.assert_not_awaited()
+    mock_call.assert_not_awaited()
 
 
 async def test_approval_watcher_null_work_item_approval_is_visible_to_dm_watcher(store):
@@ -150,6 +139,13 @@ async def test_approval_watcher_idempotent_on_replay(store):
 
     async with store._conn.execute(
         "SELECT COUNT(*) FROM approvals WHERE mcp_approval_id='req-replay'"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row[0] == 1
+
+    # Also verify outbox idempotency — second poll must not create a second DM
+    async with store._conn.execute(
+        "SELECT COUNT(*) FROM outbox WHERE idempotency_key='approval-notify-req-replay'"
     ) as cur:
         row = await cur.fetchone()
     assert row[0] == 1
@@ -340,7 +336,8 @@ async def test_approval_watcher_non_string_display_payload_does_not_abort_row(st
     ) as cur:
         row = await cur.fetchone()
     assert row is not None
-    assert "12345" in row["action_description"]
+    assert "raw_display_payload" in row["action_description"]
+    assert '"12345"' in row["action_description"]  # as JSON string value inside wrapper
 
 
 async def test_approval_watcher_unexpected_response_shape_logs_and_skips(store):
@@ -410,3 +407,29 @@ async def test_approval_watcher_request_payload_not_in_dm(store):
     assert len(outbox_rows) == 1
     assert "1000" not in outbox_rows[0]["message_text"]
     assert "secret_wallet" not in outbox_rows[0]["message_text"]
+
+
+async def test_approval_watcher_batch_approvals_get_same_work_item_id(store, db_conn):
+    """All approvals in a single poll batch are associated with the latest dispatched work item."""
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-batch', 'dm', 'wi-batch', 'acc-alice', 'dispatched', 'idem-wi-batch')"
+    )
+    await db_conn.commit()
+    shutdown_event = asyncio.Event()
+
+    async def one_shot(tool_name, arguments):
+        shutdown_event.set()
+        return [_req(id="req-a"), _req(id="req-b", tool_name="zap_user")]
+
+    watcher = make_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=one_shot))
+    await watcher.run()
+
+    async with store._conn.execute(
+        "SELECT mcp_approval_id, work_item_id FROM approvals ORDER BY mcp_approval_id"
+    ) as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 2
+    assert rows[0]["work_item_id"] == "wi-batch"
+    assert rows[1]["work_item_id"] == "wi-batch"

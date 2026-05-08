@@ -57,6 +57,8 @@ class ApprovalRequestWatcher:
                     )
                     requests = []
 
+                # One agent runs at a time per identity, so all approvals in this batch
+                # belong to the latest dispatched work item.
                 work_item_id = None
                 if requests:
                     dispatched = await self._store.get_latest_dispatched_work_item(
@@ -148,19 +150,26 @@ class ApprovalRequestWatcher:
                 payload_type=type(raw_request_payload).__name__,
             )
 
-        if display_raw is not None:
+        if display_raw is None:
+            dm_display = "(details unavailable)"
+        elif not isinstance(display_raw, str):
+            dm_display = json.dumps({"raw_display_payload": str(display_raw)})
+            log.warning(
+                "approval_watcher_invalid_display_payload",
+                identity=self._identity_label,
+                req_id=req_id,
+            )
+        else:
             try:
                 json.loads(display_raw)
                 dm_display = display_raw
-            except (json.JSONDecodeError, ValueError, TypeError):
-                dm_display = json.dumps({"raw_display_payload": str(display_raw)})
+            except (json.JSONDecodeError, ValueError):
+                dm_display = json.dumps({"raw_display_payload": display_raw})
                 log.warning(
                     "approval_watcher_invalid_display_payload",
                     identity=self._identity_label,
                     req_id=req_id,
                 )
-        else:
-            dm_display = "(details unavailable)"
 
         action_description = f"{tool_name}: {dm_display}"
 
