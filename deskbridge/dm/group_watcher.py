@@ -218,17 +218,11 @@ class GroupWatcher:
 
     async def _handle_approve(self, msg: dict) -> None:
         try:
-            row = await self._store.get_pending_approval(self._account_id)
-            if row is None:
-                reply = "No pending approval to approve."
-            else:
-                await self._store.resolve_approval(row["id"], "approved")
-                reply = "Approved."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
                 self._account_id,
                 None,
-                reply,
+                "Approval decisions must be sent via direct message, not group chat.",
                 f"approve-reply-{msg['id']}",
                 dest_group_id=msg["group_id"],
             )
@@ -237,17 +231,11 @@ class GroupWatcher:
 
     async def _handle_reject(self, msg: dict) -> None:
         try:
-            row = await self._store.get_pending_approval(self._account_id)
-            if row is None:
-                reply = "No pending approval to reject."
-            else:
-                await self._store.resolve_approval(row["id"], "rejected")
-                reply = "Rejected."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
                 self._account_id,
                 None,
-                reply,
+                "Approval decisions must be sent via direct message, not group chat.",
                 f"reject-reply-{msg['id']}",
                 dest_group_id=msg["group_id"],
             )

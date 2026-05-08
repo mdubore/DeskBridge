@@ -210,3 +210,71 @@ async def test_group_watcher_reject_exits_cleanly(store):
     watcher = make_group_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=reject))
     await watcher.run()
     assert not shutdown_event.is_set()
+
+
+async def test_group_watcher_approve_intent_sends_use_dm_reply(store, db_conn):
+    """Approve intent via group chat must send a 'use DM' reply and not modify any approval row."""
+    shutdown_event = asyncio.Event()
+
+    async def one_shot(tool_name, arguments):
+        shutdown_event.set()
+        return _group_response(_msg(id="gmsg-appr", content="approve"))
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-1')"
+    )
+    await db_conn.commit()
+
+    watcher = make_group_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=one_shot))
+    await watcher.run()
+
+    # Approval row must be untouched
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    # A group reply must be sent directing the operator to use DM
+    async with store._conn.execute("SELECT dest_group_id, message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["dest_group_id"] == GROUP_ID
+    assert "direct message" in rows[0]["message_text"].lower()
+
+
+async def test_group_watcher_reject_intent_sends_use_dm_reply(store, db_conn):
+    """Reject intent via group chat must send a 'use DM' reply and not modify any approval row."""
+    shutdown_event = asyncio.Event()
+
+    async def one_shot(tool_name, arguments):
+        shutdown_event.set()
+        return _group_response(_msg(id="gmsg-rej", content="reject"))
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-1')"
+    )
+    await db_conn.commit()
+
+    watcher = make_group_watcher(store, shutdown_event, call_tool_mock=AsyncMock(side_effect=one_shot))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT dest_group_id, message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["dest_group_id"] == GROUP_ID
+    assert "direct message" in rows[0]["message_text"].lower()
