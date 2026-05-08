@@ -963,3 +963,74 @@ async def test_dm_watcher_approve_unknown_mcp_error_leaves_pending_sends_failure
         rows = await cur.fetchall()
     assert len(rows) == 1
     assert "Failed to record decision" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_reject_skips_respond_to_approval_when_no_mcp_approval_id(store, db_conn):
+    shutdown_event = asyncio.Event()
+    resolve_calls = []
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="no, reject that"))
+        elif tool_name == "respond_to_approval":
+            resolve_calls.append(arguments)
+            return {"ok": True}
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status) "
+        "VALUES ('appr-1', 'wi-1', 'force push', 'pending')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    assert len(resolve_calls) == 0
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "rejected"
+
+
+async def test_dm_watcher_reject_unknown_mcp_error_leaves_pending_sends_failure_reply(store, db_conn):
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="reject"))
+        elif tool_name == "respond_to_approval":
+            raise McpToolError(
+                mcp_error=McpError(category=McpErrorCategory.INTERNAL_ERROR, message="infra down"),
+                routing=RoutingDecision.RETRY,
+            )
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-11')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
