@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,22 +11,6 @@ from deskbridge.models import McpError, McpErrorCategory
 
 OPERATOR_NPUB = "npub1op"
 SESSION_ID = "session-123"
-
-
-def make_approval_watcher(store, shutdown_event, *, list_pending_result, session_id=SESSION_ID):
-    mock_client = MagicMock()
-    mock_client.call_tool = AsyncMock(return_value=list_pending_result)
-    mock_broker = MagicMock()
-    mock_broker.get_session_id = AsyncMock(return_value=session_id)
-    return ApprovalRequestWatcher(
-        identity_label="alice",
-        operator_npub=OPERATOR_NPUB,
-        store=store,
-        client=mock_client,
-        broker=mock_broker,
-        shutdown_event=shutdown_event,
-        poll_interval_secs=0.01,
-    )
 
 
 def make_dm_watcher(store, shutdown_event, *, dm_messages, respond_result=None,
@@ -224,7 +207,15 @@ async def test_approval_sdk_exception_terminal(store):
     async def stop_after_first_dm():
         while dm_call_count == 0:
             await asyncio.sleep(0.01)
-        await asyncio.sleep(0.05)
+        # Poll until the DB write lands (DmWatcher may still be in flight)
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            async with store._conn.execute(
+                "SELECT status FROM approvals WHERE mcp_approval_id='req-sdk-exc'"
+            ) as cur:
+                row = await cur.fetchone()
+            if row and row["status"] != "pending":
+                break
         shutdown.set()
 
     await asyncio.gather(dm_watcher.run(), stop_after_first_dm())
