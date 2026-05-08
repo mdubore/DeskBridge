@@ -200,24 +200,15 @@ class DmWatcher:
             if row is None:
                 reply = "No pending approval to approve."
             else:
-                await self._store.resolve_approval(row["id"], "approved")
-                reply = "Approved."
                 mcp_approval_id = row["mcp_approval_id"]
                 if mcp_approval_id and session_id:
-                    try:
-                        await self._client.call_tool(
-                            "resolve_approval_request",
-                            {
-                                "session_id": session_id,
-                                "request_id": mcp_approval_id,
-                                "decision": "approved",
-                            },
-                        )
-                    except Exception:
-                        log.exception(
-                            "dm_watcher_resolve_approval_error",
-                            identity=self._identity_label,
-                        )
+                    reply = await self._call_respond_to_approval(
+                        row=row, mcp_approval_id=mcp_approval_id,
+                        session_id=session_id, approved=True,
+                    )
+                else:
+                    await self._store.resolve_approval(row["id"], "approved")
+                    reply = "Approved."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
                 self._account_id,
@@ -234,24 +225,15 @@ class DmWatcher:
             if row is None:
                 reply = "No pending approval to reject."
             else:
-                await self._store.resolve_approval(row["id"], "rejected")
-                reply = "Rejected."
                 mcp_approval_id = row["mcp_approval_id"]
                 if mcp_approval_id and session_id:
-                    try:
-                        await self._client.call_tool(
-                            "resolve_approval_request",
-                            {
-                                "session_id": session_id,
-                                "request_id": mcp_approval_id,
-                                "decision": "rejected",
-                            },
-                        )
-                    except Exception:
-                        log.exception(
-                            "dm_watcher_resolve_approval_error",
-                            identity=self._identity_label,
-                        )
+                    reply = await self._call_respond_to_approval(
+                        row=row, mcp_approval_id=mcp_approval_id,
+                        session_id=session_id, approved=False,
+                    )
+                else:
+                    await self._store.resolve_approval(row["id"], "rejected")
+                    reply = "Rejected."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
                 self._account_id,
@@ -261,3 +243,119 @@ class DmWatcher:
             )
         except Exception:
             log.exception("dm_watcher_handle_reject_error", identity=self._identity_label)
+
+    async def _call_respond_to_approval(
+        self,
+        row: dict,
+        mcp_approval_id: str,
+        session_id: str,
+        approved: bool,
+    ) -> str:
+        try:
+            result = await self._client.call_tool(
+                "respond_to_approval",
+                {
+                    "session_id": session_id,
+                    "approval_request_id": mcp_approval_id,
+                    "approved": approved,
+                    "note": None,
+                },
+            )
+            if not (isinstance(result, dict) and result.get("ok") is True):
+                log.error(
+                    "dm_watcher_respond_to_approval_unexpected_response",
+                    identity=self._identity_label,
+                    mcp_approval_id=mcp_approval_id,
+                )
+                return "Failed to record decision — please check logs."
+            returned_id = result.get("approval_request_id")
+            if returned_id != mcp_approval_id:
+                log.error(
+                    "dm_watcher_approval_id_mismatch",
+                    identity=self._identity_label,
+                    sent=mcp_approval_id,
+                    returned=returned_id,
+                )
+                return "Failed to record decision — please check logs."
+            response_status = result.get("status", "")
+            if response_status == "approved":
+                local_status = "approved"
+            elif response_status == "denied":
+                local_status = "rejected"
+            else:
+                log.error(
+                    "dm_watcher_approval_unknown_response_status",
+                    identity=self._identity_label,
+                    status=response_status,
+                    mcp_approval_id=mcp_approval_id,
+                )
+                return "Failed to record decision — please check logs."
+            expected_response_status = "approved" if approved else "denied"
+            if response_status != expected_response_status:
+                log.error(
+                    "dm_watcher_approval_status_mismatch",
+                    identity=self._identity_label,
+                    sent_approved=approved,
+                    response_status=response_status,
+                    mcp_approval_id=mcp_approval_id,
+                )
+                return "Failed to record decision — please check logs."
+            await self._store.resolve_approval(row["id"], local_status)
+            log.info(
+                "dm_watcher_approval_resolved",
+                identity=self._identity_label,
+                mcp_approval_id=mcp_approval_id,
+            )
+            return "Approved." if approved else "Denied."
+        except McpToolError as e:
+            cat = e.category
+            if cat == "approval_already_resolved":
+                data_status = (e.data or {}).get("status", "")
+                if data_status == "approved":
+                    local_status = "approved"
+                elif data_status == "denied":
+                    local_status = "rejected"
+                else:
+                    log.error(
+                        "dm_watcher_approval_already_resolved_unknown_status",
+                        identity=self._identity_label,
+                        data_status=data_status,
+                        mcp_approval_id=mcp_approval_id,
+                    )
+                    return "Failed to record decision — please check logs."
+                await self._store.resolve_approval(row["id"], local_status)
+                log.warning(
+                    "dm_watcher_approval_already_resolved",
+                    identity=self._identity_label,
+                    mcp_approval_id=mcp_approval_id,
+                )
+                return "Decision received, but the approval was already resolved or has expired."
+            elif cat == "approval_expired":
+                await self._store.resolve_approval(row["id"], "rejected")
+                log.warning(
+                    "dm_watcher_approval_expired",
+                    identity=self._identity_label,
+                    mcp_approval_id=mcp_approval_id,
+                )
+                return "Decision received, but the approval was already resolved or has expired."
+            elif cat == "approval_not_found":
+                await self._store.resolve_approval(row["id"], "rejected")
+                log.error(
+                    "dm_watcher_approval_not_found",
+                    identity=self._identity_label,
+                    mcp_approval_id=mcp_approval_id,
+                )
+                return "Decision received, but the approval was already resolved or has expired."
+            else:
+                log.error(
+                    "dm_watcher_resolve_approval_error",
+                    identity=self._identity_label,
+                    message=e.mcp_error.message,
+                )
+                return "Failed to record decision — please check logs."
+        except Exception:
+            log.exception(
+                "dm_watcher_resolve_approval_error",
+                identity=self._identity_label,
+            )
+            return "Failed to record decision — please check logs."

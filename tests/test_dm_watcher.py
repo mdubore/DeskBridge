@@ -39,6 +39,20 @@ def _msg(id="msg-1", content="fix the auth bug", sender_pubkey=OPERATOR_NPUB):
     return {"id": id, "content": content, "sender_pubkey": sender_pubkey}
 
 
+def _make_mcp_tool_error(category_str: str, data: dict | None = None) -> McpToolError:
+    mcp_error = McpError(
+        category=McpErrorCategory.INTERNAL_ERROR,
+        raw_category=category_str,
+        message=f"nostrdesk: {category_str}",
+    )
+    return McpToolError(
+        mcp_error=mcp_error,
+        routing=RoutingDecision.RETRY,
+        category=category_str,
+        data=data,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Existing MCP-level tests (updated to include sender_pubkey in messages)
 # ---------------------------------------------------------------------------
@@ -369,7 +383,7 @@ async def test_dm_watcher_approve_no_pending_sends_reply(store):
     assert "No pending approval" in rows[0]["message_text"]
 
 
-async def test_dm_watcher_approve_calls_resolve_when_mcp_approval_id_set(store, db_conn):
+async def test_dm_watcher_approve_calls_respond_to_approval_with_correct_args(store, db_conn):
     shutdown_event = asyncio.Event()
     resolve_calls = []
 
@@ -377,9 +391,9 @@ async def test_dm_watcher_approve_calls_resolve_when_mcp_approval_id_set(store, 
         if tool_name == "wait_for_new_dms":
             shutdown_event.set()
             return _dm_response(_msg(id="msg-2", content="yes go ahead"))
-        elif tool_name == "resolve_approval_request":
+        elif tool_name == "respond_to_approval":
             resolve_calls.append(arguments)
-            return {"ok": True}
+            return {"ok": True, "approval_request_id": "req-ext-1", "status": "approved"}
 
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await db_conn.execute(
@@ -397,12 +411,17 @@ async def test_dm_watcher_approve_calls_resolve_when_mcp_approval_id_set(store, 
     await watcher.run()
 
     assert len(resolve_calls) == 1
-    assert resolve_calls[0]["request_id"] == "req-ext-1"
-    assert resolve_calls[0]["decision"] == "approved"
+    assert resolve_calls[0]["approval_request_id"] == "req-ext-1"
+    assert resolve_calls[0]["approved"] is True
+    assert resolve_calls[0]["note"] is None
     assert resolve_calls[0]["session_id"] == "sess-123"
 
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "approved"
 
-async def test_dm_watcher_approve_skips_resolve_when_no_mcp_approval_id(store, db_conn):
+
+async def test_dm_watcher_approve_skips_respond_to_approval_when_no_mcp_approval_id(store, db_conn):
     shutdown_event = asyncio.Event()
     resolve_calls = []
 
@@ -410,7 +429,7 @@ async def test_dm_watcher_approve_skips_resolve_when_no_mcp_approval_id(store, d
         if tool_name == "wait_for_new_dms":
             shutdown_event.set()
             return _dm_response(_msg(id="msg-2", content="yes go ahead"))
-        elif tool_name == "resolve_approval_request":
+        elif tool_name == "respond_to_approval":
             resolve_calls.append(arguments)
             return {"ok": True}
 
@@ -430,9 +449,12 @@ async def test_dm_watcher_approve_skips_resolve_when_no_mcp_approval_id(store, d
     await watcher.run()
 
     assert len(resolve_calls) == 0
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "approved"
 
 
-async def test_dm_watcher_reject_calls_resolve_when_mcp_approval_id_set(store, db_conn):
+async def test_dm_watcher_reject_calls_respond_to_approval_with_correct_args(store, db_conn):
     shutdown_event = asyncio.Event()
     resolve_calls = []
 
@@ -440,9 +462,9 @@ async def test_dm_watcher_reject_calls_resolve_when_mcp_approval_id_set(store, d
         if tool_name == "wait_for_new_dms":
             shutdown_event.set()
             return _dm_response(_msg(id="msg-2", content="no, reject that"))
-        elif tool_name == "resolve_approval_request":
+        elif tool_name == "respond_to_approval":
             resolve_calls.append(arguments)
-            return {"ok": True}
+            return {"ok": True, "approval_request_id": "req-ext-2", "status": "denied"}
 
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await db_conn.execute(
@@ -460,18 +482,22 @@ async def test_dm_watcher_reject_calls_resolve_when_mcp_approval_id_set(store, d
     await watcher.run()
 
     assert len(resolve_calls) == 1
-    assert resolve_calls[0]["request_id"] == "req-ext-2"
-    assert resolve_calls[0]["decision"] == "rejected"
+    assert resolve_calls[0]["approval_request_id"] == "req-ext-2"
+    assert resolve_calls[0]["approved"] is False
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "rejected"
 
 
-async def test_dm_watcher_approve_resolve_mcp_failure_still_sends_reply(store, db_conn):
+async def test_dm_watcher_approve_mcp_failure_sends_failure_reply_and_leaves_pending(store, db_conn):
     shutdown_event = asyncio.Event()
 
     async def call_tool_side_effect(tool_name, arguments):
         if tool_name == "wait_for_new_dms":
             shutdown_event.set()
             return _dm_response(_msg(id="msg-2", content="yes go ahead"))
-        elif tool_name == "resolve_approval_request":
+        elif tool_name == "respond_to_approval":
             raise Exception("MCP server unavailable")
 
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
@@ -489,13 +515,451 @@ async def test_dm_watcher_approve_resolve_mcp_failure_still_sends_reply(store, d
                            call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
     await watcher.run()
 
-    # MCP call failed, but the outbox reply must still be sent
     async with store._conn.execute("SELECT message_text FROM outbox") as cur:
         rows = await cur.fetchall()
     assert len(rows) == 1
-    assert rows[0]["message_text"] == "Approved."
+    assert "Failed to record decision" in rows[0]["message_text"]
 
-    # And the DB approval must still be resolved
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+
+async def test_dm_watcher_approve_already_resolved_approved_syncs_local_approved(store, db_conn):
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            raise _make_mcp_tool_error(
+                "approval_already_resolved",
+                data={"category": "approval_already_resolved", "status": "approved"},
+            )
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-3')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
     async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
         row = await cur.fetchone()
     assert row["status"] == "approved"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "was already resolved or has expired" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_already_resolved_denied_syncs_local_rejected(store, db_conn):
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            raise _make_mcp_tool_error(
+                "approval_already_resolved",
+                data={"category": "approval_already_resolved", "status": "denied"},
+            )
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-3')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "rejected"
+
+
+async def test_dm_watcher_approve_already_resolved_unknown_status_leaves_pending(store, db_conn):
+    """approval_already_resolved with status=pending (NostrDesk edge path) must leave local pending."""
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            raise _make_mcp_tool_error(
+                "approval_already_resolved",
+                data={"category": "approval_already_resolved", "status": "pending"},
+            )
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-4')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_expired_resolves_rejected_sends_expired_reply(store, db_conn):
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            raise _make_mcp_tool_error("approval_expired",
+                                       data={"category": "approval_expired"})
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-4')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "rejected"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert "was already resolved or has expired" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_not_found_resolves_rejected_sends_expired_reply(store, db_conn):
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            raise _make_mcp_tool_error("approval_not_found",
+                                       data={"category": "approval_not_found"})
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-5')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "rejected"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert "was already resolved or has expired" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_malformed_success_response_leaves_pending(store, db_conn):
+    """respond_to_approval returning ok != True must leave approval pending and send failure reply."""
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            return {"ok": False, "error": "something went wrong"}
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-bad')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_wrong_approval_request_id_does_not_resolve(store, db_conn):
+    """Mismatched approval_request_id in success response must not resolve locally — sends failure reply."""
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            return {"ok": True, "approval_request_id": "req-different", "status": "approved"}
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-7')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_unknown_success_status_does_not_resolve(store, db_conn):
+    """Unknown status in success response must not resolve locally — sends failure reply."""
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            return {"ok": True, "approval_request_id": "req-ext-8", "status": "unknown_future_status"}
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-8')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_returns_denied_status_does_not_resolve(store, db_conn):
+    """NostrDesk returns approved=True but status=denied — impossible response must leave local pending."""
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            return {"ok": True, "approval_request_id": "req-ext-9", "status": "denied"}
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-9')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_reject_returns_approved_status_does_not_resolve(store, db_conn):
+    """NostrDesk returns approved=False but status=approved — impossible response must leave local pending."""
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="reject"))
+        elif tool_name == "respond_to_approval":
+            return {"ok": True, "approval_request_id": "req-ext-10", "status": "approved"}
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-10')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
+
+
+async def test_dm_watcher_approve_latest_only_resolves_most_recent(store, db_conn):
+    """Invariant: only the most recently created pending approval is acted on."""
+    shutdown_event = asyncio.Event()
+    respond_calls = []
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            respond_calls.append(arguments)
+            return {"ok": True, "approval_request_id": arguments["approval_request_id"], "status": "approved"}
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id, created_at) "
+        "VALUES ('appr-old', 'wi-1', 'old action', 'pending', 'req-old', '2026-01-01T00:00:00Z')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id, created_at) "
+        "VALUES ('appr-new', 'wi-1', 'new action', 'pending', 'req-new', '2026-01-02T00:00:00Z')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    assert len(respond_calls) == 1
+    assert respond_calls[0]["approval_request_id"] == "req-new"
+
+    async with store._conn.execute("SELECT id, status FROM approvals ORDER BY created_at") as cur:
+        rows = await cur.fetchall()
+    statuses = {row["id"]: row["status"] for row in rows}
+    assert statuses["appr-old"] == "pending"
+    assert statuses["appr-new"] == "approved"
+
+
+async def test_dm_watcher_approve_unknown_mcp_error_leaves_pending_sends_failure_reply(store, db_conn):
+    shutdown_event = asyncio.Event()
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "wait_for_new_dms":
+            shutdown_event.set()
+            return _dm_response(_msg(id="msg-2", content="approve"))
+        elif tool_name == "respond_to_approval":
+            raise McpToolError(
+                mcp_error=McpError(category=McpErrorCategory.INTERNAL_ERROR, message="infra down"),
+                routing=RoutingDecision.RETRY,
+            )
+
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key) "
+        "VALUES ('wi-1', 'dm', 'wi-1', 'acc-alice', 'pending', 'idem-wi-1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'wi-1', 'pay invoice', 'pending', 'req-ext-6')"
+    )
+    await db_conn.commit()
+
+    watcher = make_watcher(store, shutdown_event,
+                           call_tool_mock=AsyncMock(side_effect=call_tool_side_effect))
+    await watcher.run()
+
+    async with store._conn.execute("SELECT status FROM approvals WHERE id='appr-1'") as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+
+    async with store._conn.execute("SELECT message_text FROM outbox") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert "Failed to record decision" in rows[0]["message_text"]
