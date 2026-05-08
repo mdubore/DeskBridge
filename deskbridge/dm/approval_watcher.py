@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 import structlog
+from datetime import datetime, timezone
 
 from deskbridge.db.store import Store
 from deskbridge.mcp.client import McpClient, McpToolError
@@ -20,7 +21,7 @@ class ApprovalRequestWatcher:
         broker: SessionBroker,
         shutdown_event: asyncio.Event,
         operator_npub: str | None = None,
-        poll_timeout_secs: int = 30,
+        poll_interval_secs: float = 2.0,
     ) -> None:
         self._identity_label = identity_label
         self._account_id = f"acc-{identity_label}"
@@ -29,85 +30,49 @@ class ApprovalRequestWatcher:
         self._client = client
         self._broker = broker
         self._shutdown_event = shutdown_event
-        self._poll_timeout_secs = poll_timeout_secs
+        self._poll_interval_secs = poll_interval_secs
 
     async def run(self) -> None:
-        cursor_row = await self._store.get_cursor(
-            cursor_type="approval_watcher", identity_id=self._account_id
-        )
-        after_request_id: str | None = cursor_row["last_entity_id"] if cursor_row else None
-
         log.info("approval_watcher_started", identity=self._identity_label)
 
         while not self._shutdown_event.is_set():
             session_id = await self._broker.get_session_id(self._identity_label)
             if session_id is None:
                 log.debug("approval_watcher_no_session", identity=self._identity_label)
-                try:
-                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+                await self._sleep()
                 continue
 
             try:
                 result = await self._client.call_tool(
-                    "wait_for_pending_approval_requests",
-                    {
-                        "session_id": session_id,
-                        "after_request_id": after_request_id,
-                        "timeout_seconds": self._poll_timeout_secs,
-                    },
+                    "list_pending_approvals",
+                    {"session_id": session_id, "limit": 100},
                 )
-                requests = result.get("requests", [])
+                if isinstance(result, list):
+                    requests = result
+                else:
+                    log.warning(
+                        "approval_watcher_unexpected_response_shape",
+                        identity=self._identity_label,
+                        result_type=type(result).__name__,
+                    )
+                    requests = []
+
                 work_item_id = None
                 if requests:
                     dispatched = await self._store.get_latest_dispatched_work_item(
                         self._account_id
                     )
                     work_item_id = dispatched["id"] if dispatched else None
-                for req in requests:
-                    await self._store.insert_approval(
-                        id=str(uuid.uuid4()),
-                        mcp_approval_id=req["id"],
-                        work_item_id=work_item_id,
-                        action_description=req["description"],
-                        scope=None,
-                        request_text=None,
-                        expires_at=None,
-                        identity_id=self._account_id,
-                    )
-                    if self._operator_npub:
-                        message = (
-                            f"Approval required: {req['description']}\n\n"
-                            f"Request ID: {req['id']}\n\n"
-                            f"Reply 'approve' or 'reject'."
-                        )
-                        await self._store.insert_outbox_item(
-                            str(uuid.uuid4()),
-                            self._account_id,
-                            self._operator_npub,
-                            message,
-                            f"approval-notify-{req['id']}",
-                        )
 
-                if requests:
-                    new_cursor_id = result.get("last_request_id")
-                    if new_cursor_id is None:
+                for req in requests:
+                    if not isinstance(req, dict):
                         log.warning(
-                            "approval_watcher_missing_cursor_in_response",
+                            "approval_watcher_non_dict_row",
                             identity=self._identity_label,
-                            request_count=len(requests),
+                            row_type=type(req).__name__,
                         )
-                    else:
-                        after_request_id = new_cursor_id
-                        await self._store.upsert_cursor(
-                            cursor_type="approval_watcher",
-                            identity_id=self._account_id,
-                            last_entity_id=after_request_id,
-                            last_created_at=None,
-                            last_imported_at=None,
-                            raw_json=json.dumps(result),
-                        )
+                        continue
+                    await self._process_approval(req, work_item_id)
 
             except McpToolError as e:
                 if e.routing == RoutingDecision.REJECT:
@@ -125,7 +90,6 @@ class ApprovalRequestWatcher:
                         identity=self._identity_label,
                         message=e.mcp_error.message,
                     )
-                    after_request_id = None
                 else:
                     log.error(
                         "approval_watcher_error",
@@ -133,16 +97,103 @@ class ApprovalRequestWatcher:
                         routing=e.routing,
                         message=e.mcp_error.message,
                     )
-                try:
-                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
 
             except Exception:
                 log.exception("approval_watcher_unexpected_error", identity=self._identity_label)
-                try:
-                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+
+            await self._sleep()
 
         log.info("approval_watcher_stopped", identity=self._identity_label)
+
+    async def _process_approval(self, req: dict, work_item_id: str | None) -> None:
+        req_id = req.get("id")
+        if not req_id:
+            log.warning(
+                "approval_watcher_malformed_row",
+                identity=self._identity_label,
+                keys=list(req.keys()),
+            )
+            return
+
+        raw_tool_name = req.get("tool_name")
+        tool_name = raw_tool_name if isinstance(raw_tool_name, str) and raw_tool_name else "unknown tool"
+
+        expires_at_raw = req.get("expires_at")
+        expires_at_iso: str | None = None
+        if isinstance(expires_at_raw, (int, float)):
+            try:
+                expires_at_iso = datetime.fromtimestamp(
+                    expires_at_raw, tz=timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except (OSError, OverflowError, ValueError):
+                log.warning(
+                    "approval_watcher_invalid_expires_at",
+                    identity=self._identity_label,
+                    req_id=req_id,
+                    expires_at_raw=expires_at_raw,
+                )
+
+        display_raw = req.get("display_payload_json")
+        raw_request_payload = req.get("request_payload_json")
+        if raw_request_payload is None:
+            request_payload = None
+        elif isinstance(raw_request_payload, str):
+            request_payload = raw_request_payload
+        else:
+            request_payload = json.dumps(raw_request_payload, default=str)
+            log.warning(
+                "approval_watcher_non_string_request_payload",
+                identity=self._identity_label,
+                req_id=req_id,
+                payload_type=type(raw_request_payload).__name__,
+            )
+
+        if display_raw is not None:
+            try:
+                json.loads(display_raw)
+                dm_display = display_raw
+            except (json.JSONDecodeError, ValueError, TypeError):
+                dm_display = json.dumps({"raw_display_payload": str(display_raw)})
+                log.warning(
+                    "approval_watcher_invalid_display_payload",
+                    identity=self._identity_label,
+                    req_id=req_id,
+                )
+        else:
+            dm_display = "(details unavailable)"
+
+        action_description = f"{tool_name}: {dm_display}"
+
+        await self._store.insert_approval(
+            id=str(uuid.uuid4()),
+            mcp_approval_id=req_id,
+            work_item_id=work_item_id,
+            action_description=action_description,
+            scope=None,
+            request_text=request_payload,
+            expires_at=expires_at_iso,
+            identity_id=self._account_id,
+        )
+
+        if self._operator_npub:
+            message = (
+                f"Approval required: {tool_name}\n\n"
+                f"{dm_display}\n\n"
+                f"Reference ID: {req_id}\n\n"
+                f"Reply 'approve' or 'reject' for the latest pending approval."
+            )
+            await self._store.insert_outbox_item(
+                str(uuid.uuid4()),
+                self._account_id,
+                self._operator_npub,
+                message,
+                f"approval-notify-{req_id}",
+            )
+
+    async def _sleep(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self._shutdown_event.wait(), timeout=self._poll_interval_secs
+            )
+        except asyncio.TimeoutError:
+            pass
