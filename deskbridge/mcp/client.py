@@ -8,14 +8,22 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
 from deskbridge.mcp.errors import RoutingDecision, route_mcp_error
-from deskbridge.models import McpError
+from deskbridge.models import McpError, McpErrorCategory
 
 
 class McpToolError(Exception):
-    def __init__(self, mcp_error: McpError, routing: RoutingDecision) -> None:
+    def __init__(
+        self,
+        mcp_error: McpError,
+        routing: RoutingDecision,
+        category: str | None = None,
+        data: dict | None = None,
+    ) -> None:
         super().__init__(f"[{mcp_error.category}] {mcp_error.message}")
         self.mcp_error = mcp_error
         self.routing = routing
+        self.category = category
+        self.data = data
 
 
 class McpClient:
@@ -52,7 +60,32 @@ class McpClient:
         if self._session is None:
             raise RuntimeError("McpClient is not connected — call within connect() context")
 
-        result = await self._session.call_tool(tool_name, arguments)
+        try:
+            result = await self._session.call_tool(tool_name, arguments)
+        except Exception as e:
+            sdk_data = getattr(e, "data", None)
+            if isinstance(sdk_data, dict):
+                raw_cat = sdk_data.get("category")
+                cat_str = raw_cat if isinstance(raw_cat, str) else "internal_error"
+                try:
+                    cat_enum = McpErrorCategory(cat_str)
+                except (ValueError, TypeError):
+                    cat_enum = McpErrorCategory.INTERNAL_ERROR
+                mcp_error = McpError(
+                    category=cat_enum,
+                    raw_category=cat_str,
+                    message=str(e),
+                    data=sdk_data,
+                    approval_request_id=sdk_data.get("approval_request_id"),
+                )
+                routing = route_mcp_error(mcp_error)
+                raise McpToolError(
+                    mcp_error=mcp_error,
+                    routing=routing,
+                    category=cat_str,
+                    data=sdk_data,
+                ) from e
+            raise
 
         text = result.content[0].text if result.content else ""
 
@@ -61,7 +94,12 @@ class McpClient:
                 text or "MCP tool returned error with no content"
             )
             routing = route_mcp_error(mcp_error)
-            raise McpToolError(mcp_error=mcp_error, routing=routing)
+            raise McpToolError(
+                mcp_error=mcp_error,
+                routing=routing,
+                category=mcp_error.data.get("category") if mcp_error.data else None,
+                data=mcp_error.data,
+            )
 
         try:
             return json.loads(text)

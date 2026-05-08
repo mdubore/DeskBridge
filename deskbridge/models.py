@@ -54,30 +54,41 @@ class McpCursor(BaseModel):
 
 class McpError(BaseModel):
     category: McpErrorCategory
+    raw_category: str | None = None
     message: str
     approval_request_id: str | None = None
+    data: dict | None = None
 
     @classmethod
     def from_tool_result_text(cls, text: str) -> "McpError":
         try:
-            data = json.loads(text)
-            if isinstance(data, dict) and "error" in data:
-                err = data["error"]
+            payload = json.loads(text)
+            if isinstance(payload, dict) and "error" in payload:
+                err = payload["error"]
                 if isinstance(err, dict):
-                    raw_category = err.get("category", "internal_error")
+                    raw = err.get("category", "internal_error")
+                    raw_category = raw if isinstance(raw, str) else "internal_error"
                     try:
                         category = McpErrorCategory(raw_category)
-                    except ValueError:
+                    except (ValueError, TypeError):
                         category = McpErrorCategory.INTERNAL_ERROR
+                    raw_data = err.get("data")
+                    data = raw_data if isinstance(raw_data, dict) else None
+                    approval_request_id = err.get("approval_request_id") or (
+                        data.get("approval_request_id") if data else None
+                    )
                     return cls(
                         category=category,
+                        raw_category=raw_category,
                         message=err.get("message", text),
-                        approval_request_id=err.get("approval_request_id"),
+                        approval_request_id=approval_request_id,
+                        data=data,
                     )
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
         return cls(
             category=McpErrorCategory.INTERNAL_ERROR,
+            raw_category="internal_error",
             message=text,
         )
 
