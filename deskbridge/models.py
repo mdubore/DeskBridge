@@ -88,7 +88,7 @@ class McpError(BaseModel):
             pass
         return cls(
             category=McpErrorCategory.INTERNAL_ERROR,
-            raw_category="internal_error",
+            raw_category=None,
             message=text,
         )
 

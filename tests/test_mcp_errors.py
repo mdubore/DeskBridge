@@ -81,6 +81,13 @@ def test_from_tool_result_text_no_category_defaults_to_internal_error():
     assert err.raw_category == "internal_error"
 
 
+def test_from_tool_result_text_invalid_json_falls_back():
+    err = McpError.from_tool_result_text("not json at all")
+    assert err.category == McpErrorCategory.INTERNAL_ERROR
+    assert err.raw_category is None
+    assert err.message == "not json at all"
+
+
 def test_from_tool_result_text_data_dict_extracted():
     text = json.dumps({
         "error": {
@@ -148,7 +155,6 @@ def test_from_tool_result_text_non_string_category_normalised():
     err = McpError.from_tool_result_text(text)
     assert err.category == McpErrorCategory.INTERNAL_ERROR
     assert err.raw_category == "internal_error"
-    assert isinstance(err.raw_category, str)
 
 
 # --- McpToolError attribute tests (Path 1) ---
