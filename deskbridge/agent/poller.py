@@ -56,7 +56,7 @@ class WorkItemPoller:
             )
             log.info("kanban_card_column_updated", card_id=card_id, column=column)
         except Exception:
-            log.warning("kanban_sync_failed", card_id=card_id, column=column)
+            log.warning("kanban_sync_failed", card_id=card_id, column=column, exc_info=True)
 
     async def run(self) -> None:
         log.info("work_item_poller_started", identity=self._identity_label)

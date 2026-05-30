@@ -302,15 +302,12 @@ async def test_kanban_work_item_completion_calls_update_board_card_with_configur
 
     # Inject a completed runner task so _poll_once sees it as done
     completed_task = asyncio.create_task(asyncio.sleep(0))
-    await asyncio.sleep(0)  # allow the task to finish
+    await asyncio.sleep(0)  # yield control
+    await asyncio.sleep(0)  # yield again to let task complete
     poller._active_run_task = completed_task
     poller._active_work_item_id = "wi-1"
 
-    async def stop():
-        await asyncio.sleep(0.05)
-        shutdown.set()
-
-    await asyncio.gather(poller.run(), stop())
+    await poller._poll_once()
 
     client.call_tool.assert_awaited_once_with(
         "update_board_card",
