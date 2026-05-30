@@ -172,7 +172,7 @@ class Store:
         summary: str,
         payload_json: str,
         idempotency_key: str,
-    ) -> None:
+    ) -> bool:
         async with self._conn.execute(
             """
             INSERT OR IGNORE INTO work_items
@@ -180,9 +180,10 @@ class Store:
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (id, source_type, source_id, identity_id, summary, payload_json, idempotency_key),
-        ):
-            pass
+        ) as cur:
+            inserted = cur.rowcount == 1
         await self._conn.commit()
+        return inserted
 
     async def get_pending_outbox_items(self, max_attempts: int = 3) -> list[aiosqlite.Row]:
         async with self._conn.execute(

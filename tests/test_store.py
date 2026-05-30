@@ -662,3 +662,47 @@ async def test_insert_outbox_item_with_group_id(store: Store, db_conn):
         row = await cur.fetchone()
     assert row["dest_pubkey"] is None
     assert row["dest_group_id"] == "grp-1"
+
+
+# upsert_work_item return value
+# ---------------------------------------------------------------------------
+
+async def test_upsert_work_item_returns_true_on_first_insert(store: Store):
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X"
+    )
+    result = await store.upsert_work_item(
+        id="wi-1",
+        source_type="kanban",
+        source_id="card-1",
+        identity_id="acc-alice",
+        summary="Fix bug",
+        payload_json="{}",
+        idempotency_key="kanban-card-1",
+    )
+    assert result is True
+
+
+async def test_upsert_work_item_returns_false_on_duplicate(store: Store):
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X"
+    )
+    await store.upsert_work_item(
+        id="wi-1",
+        source_type="kanban",
+        source_id="card-1",
+        identity_id="acc-alice",
+        summary="Fix bug",
+        payload_json="{}",
+        idempotency_key="kanban-card-1",
+    )
+    result = await store.upsert_work_item(
+        id="wi-2",
+        source_type="kanban",
+        source_id="card-1",
+        identity_id="acc-alice",
+        summary="Fix bug",
+        payload_json="{}",
+        idempotency_key="kanban-card-1",
+    )
+    assert result is False
