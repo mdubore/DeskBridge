@@ -696,6 +696,7 @@ async def test_upsert_work_item_returns_false_on_duplicate(store: Store):
         payload_json="{}",
         idempotency_key="kanban-card-1",
     )
+    # Different id but same idempotency_key — the UNIQUE constraint on idempotency_key causes INSERT OR IGNORE
     result = await store.upsert_work_item(
         id="wi-2",
         source_type="kanban",
