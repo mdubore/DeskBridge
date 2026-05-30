@@ -125,3 +125,54 @@ def test_identity_config_operator_npub_can_be_set():
         operator_npub="npub1op"
     )
     assert identity.operator_npub == "npub1op"
+
+
+def test_project_config_boards_defaults_to_empty():
+    from deskbridge.config import ProjectConfig
+    proj = ProjectConfig(
+        id="p1", name="N", repo_path="/r",
+        identity="alice", escalation_dm_target="npub1op"
+    )
+    assert proj.boards == []
+
+
+def test_project_config_kanban_columns_default():
+    from deskbridge.config import ProjectConfig
+    proj = ProjectConfig(
+        id="p1", name="N", repo_path="/r",
+        identity="alice", escalation_dm_target="npub1op"
+    )
+    assert proj.kanban_column_in_progress == "in_progress"
+    assert proj.kanban_column_done == "done"
+
+
+def test_project_config_kanban_fields_parse_from_toml(tmp_path):
+    content = textwrap.dedent("""
+        [supervisor]
+        db_path = "/tmp/test.db"
+
+        [mcp]
+        command = "nostrdesk-mcp"
+
+        [[identities]]
+        label = "alice"
+        npub = "npub1alice"
+        passphrase_ref = "env:ALICE_PASSPHRASE"
+
+        [[projects]]
+        id = "proj-1"
+        name = "Test Project"
+        repo_path = "/tmp/repo"
+        identity = "alice"
+        escalation_dm_target = "npub1human"
+        boards = ["ch-abc", "ch-def"]
+        kanban_column_in_progress = "doing"
+        kanban_column_done = "finished"
+    """)
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(content)
+    config = load_config(cfg_file)
+    proj = config.projects[0]
+    assert proj.boards == ["ch-abc", "ch-def"]
+    assert proj.kanban_column_in_progress == "doing"
+    assert proj.kanban_column_done == "finished"

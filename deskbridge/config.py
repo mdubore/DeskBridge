@@ -76,6 +76,9 @@ class ProjectConfig(BaseModel):
     allowed_autonomous_actions: list[str] = Field(
         default_factory=lambda: ["read", "send_dm", "update_task_status"]
     )
+    boards: list[str] = Field(default_factory=list)
+    kanban_column_in_progress: str = "in_progress"
+    kanban_column_done: str = "done"
 
 
 class DeskBridgeConfig(BaseModel):
