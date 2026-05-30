@@ -149,6 +149,17 @@ async def _sleep(self) -> None:
 
 `WorkItemPoller` already claims work items and runs agents. Two new `update_board_card` calls are added based on `source_type`.
 
+### Constructor update
+
+`WorkItemPoller.__init__` gains two new parameters:
+
+```python
+kanban_column_in_progress: str = "in_progress",
+kanban_column_done: str = "done",
+```
+
+The Supervisor passes these from the project's `ProjectConfig` when instantiating the poller. If the project has no kanban config (or no project at all), the defaults apply and the writeback calls still work correctly — they simply use the default column names, which is harmless since they are only called for `source_type == "kanban"` work items.
+
 ### On claim (dispatch start)
 
 After `store.claim_work_item(work_item_id)` succeeds:
@@ -281,8 +292,8 @@ Configurable per project via `kanban_column_in_progress` and `kanban_column_done
 
 ### `tests/test_work_item_poller.py` (extend)
 
-- Kanban work item claimed → `update_board_card` called with `column="in_progress"` and correct `card_id`.
-- Kanban work item completed → `update_board_card` called with `column="done"`.
+- Kanban work item claimed → `update_board_card` called with the configured `kanban_column_in_progress` value and correct `card_id`. Tests use a non-default column name (e.g. `"doing"`) to prove the configured value is used, not a hardcoded literal.
+- Kanban work item completed → `update_board_card` called with the configured `kanban_column_done` value. Same: use a non-default name (e.g. `"finished"`) in the test.
 - DM-sourced work item claimed → `update_board_card` not called.
 - `update_board_card` raises exception on claim → warning logged; dispatch proceeds; work item is not left unclaimed.
 - No session when syncing → warning logged; dispatch proceeds.
