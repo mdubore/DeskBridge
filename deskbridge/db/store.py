@@ -31,6 +31,39 @@ class Store:
             pass
         await self._conn.commit()
 
+    async def upsert_project(
+        self,
+        id: str,
+        name: str,
+        repo_path: str,
+        identity_id: str,
+        agents_json: str,
+        boards_json: str,
+        allowed_actions_json: str,
+        escalation_dm_target: str | None,
+    ) -> None:
+        async with self._conn.execute(
+            """
+            INSERT INTO projects
+                (id, name, repo_path, identity_id, agents_json,
+                 boards_json, allowed_actions_json, escalation_dm_target)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name                 = excluded.name,
+                repo_path            = excluded.repo_path,
+                agents_json          = excluded.agents_json,
+                boards_json          = excluded.boards_json,
+                allowed_actions_json = excluded.allowed_actions_json,
+                escalation_dm_target = excluded.escalation_dm_target
+            """,
+            (
+                id, name, repo_path, identity_id, agents_json,
+                boards_json, allowed_actions_json, escalation_dm_target,
+            ),
+        ):
+            pass
+        await self._conn.commit()
+
     async def get_account(self, id: str) -> aiosqlite.Row | None:
         async with self._conn.execute(
             "SELECT * FROM accounts WHERE id = ?", (id,)
@@ -406,4 +439,15 @@ async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig)
             npub=identity.npub,
             label=identity.label,
             passphrase_ref=identity.passphrase_ref,
+        )
+    for project in config.projects:
+        await store.upsert_project(
+            id=project.id,
+            name=project.name,
+            repo_path=project.repo_path,
+            identity_id=f"acc-{project.identity}",
+            agents_json=json.dumps(project.agents),
+            boards_json=json.dumps(project.boards),
+            allowed_actions_json=json.dumps(project.allowed_autonomous_actions),
+            escalation_dm_target=project.escalation_dm_target,
         )

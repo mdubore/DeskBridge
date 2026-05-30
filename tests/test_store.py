@@ -1,7 +1,9 @@
 import pytest
+import json
 import aiosqlite
 from deskbridge.db.store import Store, bootstrap_accounts_from_config
-from deskbridge.config import DeskBridgeConfig, SupervisorConfig, McpConfig, IdentityConfig
+from deskbridge.db.schema import apply_schema
+from deskbridge.config import DeskBridgeConfig, SupervisorConfig, McpConfig, IdentityConfig, ProjectConfig
 
 
 def make_config() -> DeskBridgeConfig:
@@ -707,3 +709,59 @@ async def test_upsert_work_item_returns_false_on_duplicate(store: Store):
         idempotency_key="kanban-card-1",
     )
     assert result is False
+
+
+# ===========================================================================
+# bootstrap_inserts_project_row
+# ===========================================================================
+
+async def test_bootstrap_inserts_project_row(tmp_path):
+    config = DeskBridgeConfig(
+        supervisor=SupervisorConfig(db_path=str(tmp_path / "test.db")),
+        mcp=McpConfig(command="nostrdesk-mcp"),
+        identities=[IdentityConfig(label="alice", npub="npub1alice", passphrase_ref="env:X")],
+        projects=[ProjectConfig(
+            id="proj-1", name="MyProj", repo_path="/repo",
+            identity="alice", escalation_dm_target="npub1op",
+            boards=["ch-abc"],
+        )],
+    )
+    db_path = tmp_path / "test.db"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        store = Store(conn)
+        await bootstrap_accounts_from_config(store=store, config=config)
+        row = await store.get_project_for_identity("acc-alice")
+    assert row is not None
+    assert json.loads(row["boards_json"]) == ["ch-abc"]
+    assert row["name"] == "MyProj"
+
+
+async def test_bootstrap_project_upsert_preserves_groups_json(tmp_path):
+    config = DeskBridgeConfig(
+        supervisor=SupervisorConfig(db_path=str(tmp_path / "test.db")),
+        mcp=McpConfig(command="nostrdesk-mcp"),
+        identities=[IdentityConfig(label="alice", npub="npub1alice", passphrase_ref="env:X")],
+        projects=[ProjectConfig(
+            id="proj-1", name="MyProj", repo_path="/repo",
+            identity="alice", escalation_dm_target="npub1op",
+        )],
+    )
+    db_path = tmp_path / "test.db"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        store = Store(conn)
+        # First bootstrap creates the row
+        await bootstrap_accounts_from_config(store=store, config=config)
+        # Manually set groups_json (simulates relay sync populating it)
+        await conn.execute(
+            "UPDATE projects SET groups_json = ? WHERE id = ?",
+            ('["grp-1"]', "proj-1"),
+        )
+        await conn.commit()
+        # Second bootstrap (restart) must NOT overwrite groups_json
+        await bootstrap_accounts_from_config(store=store, config=config)
+        row = await store.get_project_for_identity("acc-alice")
+    assert json.loads(row["groups_json"]) == ["grp-1"], "restart must not clear relay-populated groups"
