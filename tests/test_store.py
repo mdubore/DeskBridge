@@ -734,7 +734,7 @@ async def test_bootstrap_inserts_project_row(tmp_path):
         await bootstrap_accounts_from_config(store=store, config=config)
         row = await store.get_project_for_identity("acc-alice")
     assert row is not None
-    assert json.loads(row["boards_json"]) == ["ch-abc"]
+    assert row["boards_json"] == '["ch-abc"]'
     assert row["name"] == "MyProj"
 
 
@@ -765,3 +765,38 @@ async def test_bootstrap_project_upsert_preserves_groups_json(tmp_path):
         await bootstrap_accounts_from_config(store=store, config=config)
         row = await store.get_project_for_identity("acc-alice")
     assert json.loads(row["groups_json"]) == ["grp-1"], "restart must not clear relay-populated groups"
+
+
+async def test_bootstrap_project_identity_reassignment(tmp_path):
+    db_path = tmp_path / "test.db"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        store = Store(conn)
+
+        config_v1 = DeskBridgeConfig(
+            supervisor=SupervisorConfig(db_path=str(db_path)),
+            mcp=McpConfig(command="nostrdesk-mcp"),
+            identities=[
+                IdentityConfig(label="alice", npub="npub1alice", passphrase_ref="env:X"),
+                IdentityConfig(label="bob",   npub="npub1bob",   passphrase_ref="env:Y"),
+            ],
+            projects=[ProjectConfig(
+                id="proj-1", name="MyProj", repo_path="/repo",
+                identity="alice", escalation_dm_target="npub1op",
+            )],
+        )
+        await bootstrap_accounts_from_config(store=store, config=config_v1)
+
+        config_v2 = config_v1.model_copy(
+            update={"projects": [ProjectConfig(
+                id="proj-1", name="MyProj", repo_path="/repo",
+                identity="bob", escalation_dm_target="npub1op",
+            )]}
+        )
+        await bootstrap_accounts_from_config(store=store, config=config_v2)
+
+        row = await store.get_project_for_identity("acc-bob")
+        assert row is not None, "project must be findable under new identity"
+        old_row = await store.get_project_for_identity("acc-alice")
+        assert old_row is None, "project must not still map to old identity"

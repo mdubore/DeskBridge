@@ -47,14 +47,17 @@ class Store:
             INSERT INTO projects
                 (id, name, repo_path, identity_id, agents_json,
                  boards_json, allowed_actions_json, escalation_dm_target)
+                -- groups_json omitted: defaults to '[]', managed by relay sync
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name                 = excluded.name,
                 repo_path            = excluded.repo_path,
+                identity_id          = excluded.identity_id,
                 agents_json          = excluded.agents_json,
                 boards_json          = excluded.boards_json,
                 allowed_actions_json = excluded.allowed_actions_json,
                 escalation_dm_target = excluded.escalation_dm_target
+                -- groups_json excluded: populated by relay sync, must survive restarts
             """,
             (
                 id, name, repo_path, identity_id, agents_json,
