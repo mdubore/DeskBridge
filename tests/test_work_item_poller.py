@@ -220,3 +220,233 @@ async def test_poller_cancels_runner_when_work_item_cancel_requested():
     store.complete_work_item.assert_awaited_once_with("wi-1", "cancelled")
     assert poller._active_run_task is None
     assert poller._active_work_item_id is None
+
+
+async def test_kanban_work_item_claim_calls_update_board_card_with_configured_column():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    kanban_item = _row(
+        id="wi-1", source_type="kanban", source_id="card-1",
+        summary="Fix auth", payload_json="{}",
+    )
+    store = MagicMock()
+    store.get_project_for_identity = AsyncMock(return_value=project_row)
+    store.get_pending_work_items = AsyncMock(return_value=[kanban_item])
+    store.claim_work_item = AsyncMock(return_value=True)
+    store.get_work_item = AsyncMock(return_value=None)
+
+    broker = MagicMock()
+    broker.get_session_id = AsyncMock(return_value="sess-1")
+
+    client = MagicMock()
+    client.call_tool = AsyncMock()
+
+    async def fake_run():
+        shutdown.set()
+
+    with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
+        poller = WorkItemPoller(
+            identity_label="alice",
+            store=store,
+            client=client,
+            broker=broker,
+            config=make_config(),
+            shutdown_event=shutdown,
+            poll_interval_secs=0.01,
+            kanban_column_in_progress="doing",
+            kanban_column_done="finished",
+        )
+        await poller.run()
+
+    client.call_tool.assert_awaited_once_with(
+        "update_board_card",
+        {
+            "session_id": "sess-1",
+            "card_id": "card-1",
+            "column": "doing",
+            "idempotency_key": "deskbridge-wi-1-in-progress",
+        },
+    )
+
+
+async def test_kanban_work_item_completion_calls_update_board_card_with_configured_column():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    kanban_item = _row(
+        id="wi-1", source_type="kanban", source_id="card-1",
+        summary="Fix auth", payload_json="{}", status="done",
+    )
+    store = MagicMock()
+    store.get_project_for_identity = AsyncMock(return_value=project_row)
+    store.get_pending_work_items = AsyncMock(return_value=[])
+    store.get_work_item = AsyncMock(return_value=kanban_item)
+
+    broker = MagicMock()
+    broker.get_session_id = AsyncMock(return_value="sess-1")
+
+    client = MagicMock()
+    client.call_tool = AsyncMock()
+
+    poller = WorkItemPoller(
+        identity_label="alice",
+        store=store,
+        client=client,
+        broker=broker,
+        config=make_config(),
+        shutdown_event=shutdown,
+        poll_interval_secs=0.01,
+        kanban_column_in_progress="doing",
+        kanban_column_done="finished",
+    )
+
+    # Inject a completed runner task so _poll_once sees it as done
+    completed_task = asyncio.create_task(asyncio.sleep(0))
+    await asyncio.sleep(0)  # allow the task to finish
+    poller._active_run_task = completed_task
+    poller._active_work_item_id = "wi-1"
+
+    async def stop():
+        await asyncio.sleep(0.05)
+        shutdown.set()
+
+    await asyncio.gather(poller.run(), stop())
+
+    client.call_tool.assert_awaited_once_with(
+        "update_board_card",
+        {
+            "session_id": "sess-1",
+            "card_id": "card-1",
+            "column": "finished",
+            "idempotency_key": "deskbridge-wi-1-done",
+        },
+    )
+
+
+async def test_dm_work_item_claim_does_not_call_update_board_card():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    dm_item = _row(
+        id="wi-2", source_type="dm", source_id="msg-1",
+        summary="Fix bug", payload_json="{}",
+    )
+    store = MagicMock()
+    store.get_project_for_identity = AsyncMock(return_value=project_row)
+    store.get_pending_work_items = AsyncMock(return_value=[dm_item])
+    store.claim_work_item = AsyncMock(return_value=True)
+    store.get_work_item = AsyncMock(return_value=None)
+
+    broker = MagicMock()
+    broker.get_session_id = AsyncMock(return_value="sess-1")
+
+    client = MagicMock()
+    client.call_tool = AsyncMock()
+
+    async def fake_run():
+        shutdown.set()
+
+    with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
+        poller = WorkItemPoller(
+            identity_label="alice",
+            store=store,
+            client=client,
+            broker=broker,
+            config=make_config(),
+            shutdown_event=shutdown,
+            poll_interval_secs=0.01,
+        )
+        await poller.run()
+
+    client.call_tool.assert_not_awaited()
+
+
+async def test_update_board_card_error_on_claim_does_not_block_dispatch():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    kanban_item = _row(
+        id="wi-1", source_type="kanban", source_id="card-1",
+        summary="Fix", payload_json="{}",
+    )
+    store = MagicMock()
+    store.get_project_for_identity = AsyncMock(return_value=project_row)
+    store.get_pending_work_items = AsyncMock(return_value=[kanban_item])
+    store.claim_work_item = AsyncMock(return_value=True)
+    store.get_work_item = AsyncMock(return_value=None)
+
+    broker = MagicMock()
+    broker.get_session_id = AsyncMock(return_value="sess-1")
+
+    client = MagicMock()
+    client.call_tool = AsyncMock(side_effect=Exception("network error"))
+
+    runner_called = False
+
+    async def fake_run():
+        nonlocal runner_called
+        runner_called = True
+        shutdown.set()
+
+    with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
+        poller = WorkItemPoller(
+            identity_label="alice",
+            store=store,
+            client=client,
+            broker=broker,
+            config=make_config(),
+            shutdown_event=shutdown,
+            poll_interval_secs=0.01,
+            kanban_column_in_progress="doing",
+            kanban_column_done="finished",
+        )
+        await poller.run()
+
+    store.claim_work_item.assert_awaited_once_with("wi-1")
+    assert runner_called, "AgentRunner.run should be called despite update_board_card failure"
+
+
+async def test_no_session_on_sync_logs_warning_and_dispatch_proceeds():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    kanban_item = _row(
+        id="wi-1", source_type="kanban", source_id="card-1",
+        summary="Fix", payload_json="{}",
+    )
+    store = MagicMock()
+    store.get_project_for_identity = AsyncMock(return_value=project_row)
+    store.get_pending_work_items = AsyncMock(return_value=[kanban_item])
+    store.claim_work_item = AsyncMock(return_value=True)
+    store.get_work_item = AsyncMock(return_value=None)
+
+    broker = MagicMock()
+    broker.get_session_id = AsyncMock(return_value=None)
+
+    client = MagicMock()
+    client.call_tool = AsyncMock()
+
+    runner_called = False
+
+    async def fake_run():
+        nonlocal runner_called
+        runner_called = True
+        shutdown.set()
+
+    with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
+        poller = WorkItemPoller(
+            identity_label="alice",
+            store=store,
+            client=client,
+            broker=broker,
+            config=make_config(),
+            shutdown_event=shutdown,
+            poll_interval_secs=0.01,
+            kanban_column_in_progress="doing",
+            kanban_column_done="finished",
+        )
+        await poller.run()
+
+    client.call_tool.assert_not_awaited()
+    store.claim_work_item.assert_awaited_once_with("wi-1")
+    assert runner_called, "AgentRunner.run should be called even when session is unavailable"

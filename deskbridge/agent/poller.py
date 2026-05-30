@@ -21,6 +21,8 @@ class WorkItemPoller:
         config: DeskBridgeConfig,
         shutdown_event: asyncio.Event,
         poll_interval_secs: float = 10.0,
+        kanban_column_in_progress: str = "in_progress",
+        kanban_column_done: str = "done",
     ) -> None:
         self._identity_label = identity_label
         self._account_id = f"acc-{identity_label}"
@@ -30,8 +32,31 @@ class WorkItemPoller:
         self._config = config
         self._shutdown_event = shutdown_event
         self._poll_interval_secs = poll_interval_secs
+        self._kanban_column_in_progress = kanban_column_in_progress
+        self._kanban_column_done = kanban_column_done
         self._active_run_task: asyncio.Task | None = None
         self._active_work_item_id: str | None = None
+
+    async def _sync_card_column(
+        self, card_id: str, column: str, idempotency_key: str
+    ) -> None:
+        session_id = await self._broker.get_session_id(self._identity_label)
+        if session_id is None:
+            log.warning("kanban_sync_no_session", card_id=card_id, column=column)
+            return
+        try:
+            await self._client.call_tool(
+                "update_board_card",
+                {
+                    "session_id": session_id,
+                    "card_id": card_id,
+                    "column": column,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+            log.info("kanban_card_column_updated", card_id=card_id, column=column)
+        except Exception:
+            log.warning("kanban_sync_failed", card_id=card_id, column=column)
 
     async def run(self) -> None:
         log.info("work_item_poller_started", identity=self._identity_label)
@@ -51,8 +76,20 @@ class WorkItemPoller:
             log.info("work_item_poller_stopped", identity=self._identity_label)
 
     async def _poll_once(self) -> None:
-        # Clear finished runner
+        # Detect completed runner and fire done writeback for kanban items
         if self._active_run_task is not None and self._active_run_task.done():
+            if self._active_work_item_id is not None:
+                completed_item = await self._store.get_work_item(self._active_work_item_id)
+                if (
+                    completed_item is not None
+                    and completed_item["source_type"] == "kanban"
+                    and completed_item["status"] in ("done", "failed")
+                ):
+                    await self._sync_card_column(
+                        completed_item["source_id"],
+                        column=self._kanban_column_done,
+                        idempotency_key=f"deskbridge-{self._active_work_item_id}-done",
+                    )
             self._active_run_task = None
             self._active_work_item_id = None
 
@@ -84,6 +121,13 @@ class WorkItemPoller:
             claimed = await self._store.claim_work_item(row["id"])
             if not claimed:
                 continue
+
+            if row["source_type"] == "kanban":
+                await self._sync_card_column(
+                    row["source_id"],
+                    column=self._kanban_column_in_progress,
+                    idempotency_key=f"deskbridge-{row['id']}-in-progress",
+                )
 
             project_cfg = next(
                 (p for p in self._config.projects if p.id == project["id"]), None
