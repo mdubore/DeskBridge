@@ -950,7 +950,11 @@ class WorkItemPoller:
         if self._active_run_task is not None and self._active_run_task.done():
             if self._active_work_item_id is not None:
                 completed_item = await self._store.get_work_item(self._active_work_item_id)
-                if completed_item is not None and completed_item["source_type"] == "kanban":
+                if (
+                    completed_item is not None
+                    and completed_item["source_type"] == "kanban"
+                    and completed_item["status"] in ("done", "failed")
+                ):
                     await self._sync_card_column(
                         completed_item["source_id"],
                         column=self._kanban_column_done,
