@@ -4,6 +4,7 @@ import structlog
 
 from deskbridge.db.store import Store
 from deskbridge.mcp.client import McpClient, McpToolError
+from deskbridge.mcp.errors import RoutingDecision
 from deskbridge.mcp.session import SessionBroker
 
 log = structlog.get_logger()
@@ -62,7 +63,14 @@ class KanbanWatcher:
                         continue
                     for card in cards:
                         await self._process_card(card)
-                except McpToolError:
+                except McpToolError as e:
+                    if e.routing == RoutingDecision.REJECT:
+                        log.error(
+                            "kanban_watcher_rejected",
+                            identity=self._identity_label,
+                            board=board_channel_id,
+                        )
+                        return
                     log.warning(
                         "kanban_watcher_poll_error",
                         identity=self._identity_label,
@@ -93,15 +101,23 @@ class KanbanWatcher:
         description = card.get("description") or ""
 
         idempotency_key = f"kanban-{card_id}"
-        inserted = await self._store.upsert_work_item(
-            id=str(uuid.uuid4()),
-            source_type="kanban",
-            source_id=card_id,
-            identity_id=self._account_id,
-            idempotency_key=idempotency_key,
-            summary=title,
-            payload_json=description,
-        )
+        try:
+            inserted = await self._store.upsert_work_item(
+                id=str(uuid.uuid4()),
+                source_type="kanban",
+                source_id=card_id,
+                identity_id=self._account_id,
+                idempotency_key=idempotency_key,
+                summary=title,
+                payload_json=description,
+            )
+        except Exception:
+            log.exception(
+                "kanban_watcher_store_error",
+                identity=self._identity_label,
+                card_id=card_id,
+            )
+            return
 
         if inserted:
             log.info(

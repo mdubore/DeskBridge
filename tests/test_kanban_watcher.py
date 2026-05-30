@@ -5,7 +5,7 @@ import pytest
 
 from deskbridge.dm.kanban_watcher import KanbanWatcher
 from deskbridge.mcp.client import McpToolError
-from deskbridge.models import McpError
+from deskbridge.models import McpError, McpErrorCategory
 from deskbridge.mcp.errors import RoutingDecision
 
 
@@ -214,3 +214,29 @@ async def test_shutdown_during_sleep_exits_cleanly():
         shutdown.set()
 
     await asyncio.gather(watcher.run(), stop())
+
+
+async def test_mcp_tool_error_reject_stops_watcher():
+    watcher, store, client, broker, shutdown = make_watcher()
+
+    async def reject_poll(*args, **kwargs):
+        raise McpToolError(
+            mcp_error=McpError(
+                category=McpErrorCategory.INVALID_SESSION,
+                message="auth rejected",
+            ),
+            routing=RoutingDecision.REJECT,
+        )
+
+    client.call_tool = AsyncMock(side_effect=reject_poll)
+
+    # Watcher should exit on its own without needing shutdown set externally
+    async def force_stop():
+        await asyncio.sleep(0.3)
+        shutdown.set()  # safety net so test doesn't hang
+
+    await asyncio.gather(watcher.run(), force_stop())
+
+    # call_tool called exactly once (rejected on first attempt, watcher exited)
+    assert client.call_tool.await_count == 1
+    store.upsert_work_item.assert_not_awaited()
