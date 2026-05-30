@@ -22,7 +22,7 @@ Board data is locally cached (not relay-fresh), so polling at 30-second interval
 
 ## Config Changes
 
-`ProjectConfig` gains one new field:
+`ProjectConfig` gains three new fields:
 
 ```toml
 [[projects]]
@@ -32,9 +32,13 @@ repo_path = "/home/user/myproject"
 identity = "alice"
 escalation_dm_target = "npub1..."
 boards = ["channel-id-abc", "channel-id-def"]
+kanban_column_in_progress = "in_progress"
+kanban_column_done = "done"
 ```
 
 `boards` is a list of Nostr channel IDs for boards DeskBridge should poll. Defaults to `[]`. If empty, no `KanbanWatcher` is spawned for the project's identity.
+
+`kanban_column_in_progress` and `kanban_column_done` are the column names written to the board when a work item is claimed and completed respectively. They default to `"in_progress"` and `"done"` but must be configurable because Nostr kanban boards use user-defined column names. Both are passed through to `WorkItemPoller` at startup.
 
 ---
 
@@ -42,7 +46,7 @@ boards = ["channel-id-abc", "channel-id-def"]
 
 | File | Action | What changes |
 |---|---|---|
-| `deskbridge/config.py` | Modify | Add `boards: list[str] = []` to `ProjectConfig` |
+| `deskbridge/config.py` | Modify | Add `boards`, `kanban_column_in_progress`, `kanban_column_done` to `ProjectConfig` |
 | `deskbridge/db/store.py` | Modify | `upsert_work_item` returns `bool` — `True` if newly inserted, `False` if already existed |
 | `deskbridge/dm/kanban_watcher.py` | Create | New interval-poll watcher for assigned board cards |
 | `deskbridge/agent/poller.py` | Modify | Call `update_board_card` on claim and completion for kanban-sourced work items |
@@ -64,6 +68,7 @@ One instance per identity with boards configured. Polls every 30 seconds.
 class KanbanWatcher:
     def __init__(
         self,
+        account_id: str,
         identity_label: str,
         store: Store,
         client: McpClient,
@@ -74,6 +79,8 @@ class KanbanWatcher:
         poll_interval_secs: float = 30.0,
     ) -> None:
 ```
+
+`account_id` is passed directly from the Supervisor (which already holds the bootstrapped account data) rather than being derived internally from `identity_label`. This removes the hidden coupling to the `f"acc-{label}"` naming convention.
 
 ### Poll loop
 
@@ -103,7 +110,7 @@ For each card returned:
 3. Call `store.upsert_work_item(id=str(uuid.uuid4()), source_type="kanban", source_id=card_id, identity_id=self._account_id, idempotency_key=..., summary=title, payload_json=description)`.
 4. If the return value is `True` (newly inserted):
    - Log `kanban_watcher_new_card` at INFO.
-   - If `operator_npub` is set, insert an outbox DM: `"New task assigned: {title}\n\nCard ID: {card_id}"` with idempotency key `f"kanban-notify-{card_id}"`.
+   - If `operator_npub` is set, call `store.insert_outbox_item(...)` — a local DB write, not a network call. The `OutboxDrainer` delivers the message asynchronously. Processing 50 cards in a poll cycle is 50 DB inserts, not 50 network requests. The DM text is `"New task assigned: {title}\n\nCard ID: {card_id}"` with idempotency key `f"kanban-notify-{card_id}"`.
 
 Deduplication is entirely DB-side via the `UNIQUE` constraint on `idempotency_key`. A card already in the DB causes `upsert_work_item` to return `False` — no log, no DM.
 
@@ -150,7 +157,7 @@ After `store.claim_work_item(work_item_id)` succeeds:
 if work_item["source_type"] == "kanban":
     await self._sync_card_column(
         work_item["source_id"],
-        column="in_progress",
+        column=self._kanban_column_in_progress,
         idempotency_key=f"deskbridge-{work_item_id}-in-progress",
     )
 ```
@@ -163,10 +170,12 @@ After `store.complete_work_item(work_item_id, status)`:
 if work_item["source_type"] == "kanban":
     await self._sync_card_column(
         work_item["source_id"],
-        column="done",
+        column=self._kanban_column_done,
         idempotency_key=f"deskbridge-{work_item_id}-done",
     )
 ```
+
+`_kanban_column_in_progress` and `_kanban_column_done` are set from the project config at `WorkItemPoller` construction time.
 
 ### `_sync_card_column`
 
@@ -206,6 +215,7 @@ if project and project["boards_json"]:
     if boards:
         tasks.append(asyncio.create_task(
             KanbanWatcher(
+                account_id=account_id,
                 identity_label=identity.label,
                 store=store,
                 client=client,
@@ -246,12 +256,12 @@ update_board_card(column="done")
 
 ## Column Values
 
-Fixed defaults — not configurable:
+Configurable per project via `kanban_column_in_progress` and `kanban_column_done` in `ProjectConfig`. Defaults:
 
-| Event | Column written |
-|---|---|
-| Work item claimed (dispatch start) | `"in_progress"` |
-| Work item completed | `"done"` |
+| Event | Config field | Default value |
+|---|---|---|
+| Work item claimed (dispatch start) | `kanban_column_in_progress` | `"in_progress"` |
+| Work item completed | `kanban_column_done` | `"done"` |
 
 ---
 
@@ -281,8 +291,8 @@ Fixed defaults — not configurable:
 
 ## Non-Goals
 
-- Configurable column names per project.
 - Watching boards for any card in a specific column (column-based trigger).
 - Creating or deleting board cards from DeskBridge.
 - Syncing agent run output back to card description.
 - Cursor-based incremental polling (dedup is DB-side via `idempotency_key`).
+- Guaranteed eventual consistency of kanban column state. The `update_board_card` writeback on completion is fire-and-forget. If the MCP server or Nostr relay is unavailable precisely when a work item completes, the board card will remain in its previous column permanently — `WorkItemPoller` fires the writeback once and does not retry. This is an accepted tradeoff; the local DB remains authoritative.
