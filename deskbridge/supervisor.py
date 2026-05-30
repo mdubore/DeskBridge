@@ -1,4 +1,5 @@
 import asyncio
+import json
 import signal
 import threading
 import structlog
@@ -12,6 +13,7 @@ from deskbridge.db.store import Store, bootstrap_accounts_from_config
 from deskbridge.dm.watcher import DmWatcher
 from deskbridge.dm.group_watcher import GroupWatcher
 from deskbridge.dm.approval_watcher import ApprovalRequestWatcher
+from deskbridge.dm.kanban_watcher import KanbanWatcher
 from deskbridge.dm.outbox import OutboxDrainer
 from deskbridge.agent.poller import WorkItemPoller
 from deskbridge.mcp import McpClient, SessionBroker
@@ -63,6 +65,7 @@ class Supervisor:
                 approval_watcher_tasks: list[asyncio.Task] = []
                 drainer_task: asyncio.Task | None = None
                 poller_tasks: list[asyncio.Task] = []
+                kanban_watcher_tasks: list[asyncio.Task] = []
 
                 try:
                     await broker.unlock_all()
@@ -106,8 +109,14 @@ class Supervisor:
                         ).run(),
                         name="outbox_drainer",
                     )
-                    poller_tasks = [
-                        asyncio.create_task(
+
+                    for identity in self._config.identities:
+                        account_id = f"acc-{identity.label}"
+                        project_cfg = next(
+                            (p for p in self._config.projects if p.identity == identity.label),
+                            None,
+                        )
+                        poller_tasks.append(asyncio.create_task(
                             WorkItemPoller(
                                 identity_label=identity.label,
                                 store=store,
@@ -115,11 +124,36 @@ class Supervisor:
                                 broker=broker,
                                 config=self._config,
                                 shutdown_event=self._shutdown_event,
+                                kanban_column_in_progress=(
+                                    project_cfg.kanban_column_in_progress
+                                    if project_cfg else "in_progress"
+                                ),
+                                kanban_column_done=(
+                                    project_cfg.kanban_column_done
+                                    if project_cfg else "done"
+                                ),
                             ).run(),
                             name=f"work_item_poller_{identity.label}",
-                        )
-                        for identity in self._config.identities
-                    ]
+                        ))
+
+                        project_row = await store.get_project_for_identity(account_id)
+                        if project_row and project_row["boards_json"]:
+                            boards = json.loads(project_row["boards_json"])
+                            if boards:
+                                kanban_watcher_tasks.append(asyncio.create_task(
+                                    KanbanWatcher(
+                                        account_id=account_id,
+                                        identity_label=identity.label,
+                                        store=store,
+                                        client=client,
+                                        broker=broker,
+                                        shutdown_event=self._shutdown_event,
+                                        boards=boards,
+                                        operator_npub=identity.operator_npub,
+                                    ).run(),
+                                    name=f"kanban_watcher_{identity.label}",
+                                ))
+
                     for identity in self._config.identities:
                         groups = await store.get_project_groups(f"acc-{identity.label}")
                         if groups:
@@ -157,6 +191,7 @@ class Supervisor:
                         + group_watcher_tasks
                         + approval_watcher_tasks
                         + poller_tasks
+                        + kanban_watcher_tasks
                         + ([drainer_task] if drainer_task is not None else [])
                     )
                     for task in tasks_to_cancel:

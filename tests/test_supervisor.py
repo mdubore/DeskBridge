@@ -3,7 +3,7 @@ import pytest
 import aiosqlite
 from unittest.mock import AsyncMock, MagicMock, patch, Mock, ANY
 from deskbridge.supervisor import Supervisor
-from deskbridge.config import DeskBridgeConfig, SupervisorConfig, McpConfig, IdentityConfig
+from deskbridge.config import DeskBridgeConfig, SupervisorConfig, McpConfig, IdentityConfig, ProjectConfig
 
 
 def make_config(tmp_path) -> DeskBridgeConfig:
@@ -80,6 +80,7 @@ async def test_supervisor_calls_refresh_on_heartbeat(tmp_path, monkeypatch, mock
 
         mock_store_instance = AsyncMock()
         mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
         MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
@@ -122,6 +123,7 @@ async def test_supervisor_spawns_and_cancels_dm_tasks(tmp_path, monkeypatch, moc
 
         mock_store_instance = AsyncMock()
         mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
         MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
@@ -177,6 +179,7 @@ async def test_supervisor_spawns_and_cancels_poller_tasks(tmp_path, monkeypatch,
 
         mock_store_instance = AsyncMock()
         mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
         MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
@@ -194,6 +197,8 @@ async def test_supervisor_spawns_and_cancels_poller_tasks(tmp_path, monkeypatch,
         broker=mock_broker,
         config=config,
         shutdown_event=ANY,
+        kanban_column_in_progress="in_progress",
+        kanban_column_done="done",
     )
     MockWorkItemPoller.return_value.run.assert_called_once()
 
@@ -226,6 +231,7 @@ async def test_supervisor_spawns_group_watcher_when_groups_configured(tmp_path, 
         # get_project_groups returns a non-empty list so GroupWatcher is spawned
         mock_store_instance = AsyncMock()
         mock_store_instance.get_project_groups = AsyncMock(return_value=["grp-1"])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
         MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
@@ -276,6 +282,7 @@ async def test_supervisor_no_group_watcher_when_no_groups(tmp_path, monkeypatch,
         # get_project_groups returns empty — no GroupWatcher should be spawned
         mock_store_instance = AsyncMock()
         mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
         MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
@@ -317,6 +324,7 @@ async def test_supervisor_spawns_approval_watcher(tmp_path, monkeypatch, mock_br
 
         mock_store_instance = AsyncMock()
         mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
         MockStore.return_value = mock_store_instance
 
         supervisor = Supervisor(config=config)
@@ -336,3 +344,117 @@ async def test_supervisor_spawns_approval_watcher(tmp_path, monkeypatch, mock_br
         shutdown_event=ANY,
     )
     MockApprovalWatcher.return_value.run.assert_called_once()
+
+
+async def test_supervisor_spawns_kanban_watcher_when_boards_configured(
+    tmp_path, monkeypatch, mock_broker, mock_client_ctx
+):
+    monkeypatch.setenv("ALICE", "pass")
+    config = DeskBridgeConfig(
+        supervisor=SupervisorConfig(
+            db_path=str(tmp_path / "test.db"), heartbeat_interval_secs=0.05
+        ),
+        mcp=McpConfig(command="nostrdesk-mcp"),
+        identities=[IdentityConfig(label="alice", npub="npub1alice", passphrase_ref="env:ALICE")],
+        projects=[ProjectConfig(
+            id="proj-1", name="Proj", repo_path="/repo",
+            identity="alice", escalation_dm_target="npub1op",
+            boards=["ch-abc"],
+            kanban_column_in_progress="doing",
+            kanban_column_done="finished",
+        )],
+    )
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.GroupWatcher") as MockGroupWatcher, \
+         patch("deskbridge.supervisor.ApprovalRequestWatcher") as MockApprovalWatcher, \
+         patch("deskbridge.supervisor.KanbanWatcher") as MockKanbanWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
+
+        MockMcpClient.return_value.connect.return_value = mock_client_ctx
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+        MockApprovalWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockKanbanWatcher.return_value.run = Mock(side_effect=never_finishes)
+
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(
+            return_value={"boards_json": '["ch-abc"]'}
+        )
+        MockStore.return_value = mock_store_instance
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockKanbanWatcher.assert_called_once_with(
+        account_id="acc-alice",
+        identity_label="alice",
+        store=ANY,
+        client=ANY,
+        broker=mock_broker,
+        shutdown_event=ANY,
+        boards=["ch-abc"],
+        operator_npub=None,
+    )
+    MockKanbanWatcher.return_value.run.assert_called_once()
+
+
+async def test_supervisor_does_not_spawn_kanban_watcher_when_no_boards(
+    tmp_path, monkeypatch, mock_broker, mock_client_ctx
+):
+    monkeypatch.setenv("ALICE", "pass")
+    config = make_config(tmp_path)
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.GroupWatcher") as MockGroupWatcher, \
+         patch("deskbridge.supervisor.KanbanWatcher") as MockKanbanWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
+
+        MockMcpClient.return_value.connect.return_value = mock_client_ctx
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(
+            return_value={"boards_json": "[]"}
+        )
+        MockStore.return_value = mock_store_instance
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockKanbanWatcher.assert_not_called()
