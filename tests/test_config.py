@@ -207,3 +207,13 @@ def test_project_config_check_in_interval_negative_rejected(tmp_path):
     cfg_file.write_text(MINIMAL_CONFIG.rstrip() + "\ncheck_in_interval_hours = -1.0\n")
     with pytest.raises(ConfigError):
         load_config(cfg_file)
+
+
+def test_project_config_check_in_prompt_can_be_overridden(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        MINIMAL_CONFIG.rstrip()
+        + '\ncheck_in_prompt = "Weekly sync: any blockers?"\n'
+    )
+    config = load_config(cfg_file)
+    assert config.projects[0].check_in_prompt == "Weekly sync: any blockers?"
