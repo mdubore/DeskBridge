@@ -352,7 +352,7 @@ class ScheduledCheckInWatcher:
                         exc_info=True,
                     )
                 next_bucket_time = (current_bucket + 1) * self._interval_secs
-                sleep_duration = next_bucket_time - time.time()
+                sleep_duration = max(0.0, next_bucket_time - time.time())
                 log.debug(
                     "checkin_sleeping",
                     next_checkin_utc=datetime.fromtimestamp(
@@ -481,6 +481,8 @@ pytest tests/test_agent_runner.py::test_scheduled_completion_dms_operator_npub \
 Expected: 2 FAILED (`checkin_calls` empty — step 10 does not yet exist)
 
 - [ ] **Step 3: Add `import json` and step 10 to `runner.py`**
+
+Before writing step 10, verify `result_text` is always a string: in `_do_run` line 139, `result_text = "\n".join(output_buf)[-2000:]`. Since `output_buf` is a `deque` initialized as empty and `"\n".join([])` returns `""`, `result_text` is guaranteed to be a non-None string even when the agent produces no output.
 
 Add `import json` to the imports at the top of `deskbridge/agent/runner.py` (after `import collections`):
 
