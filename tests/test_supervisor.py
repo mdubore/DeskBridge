@@ -458,3 +458,122 @@ async def test_supervisor_does_not_spawn_kanban_watcher_when_no_boards(
         await asyncio.gather(supervisor.run(), stop())
 
     MockKanbanWatcher.assert_not_called()
+
+
+async def test_supervisor_spawns_checkin_watcher_when_interval_configured(
+    tmp_path, monkeypatch, mock_broker, mock_client_ctx
+):
+    monkeypatch.setenv("ALICE", "pass")
+    config = DeskBridgeConfig(
+        supervisor=SupervisorConfig(
+            db_path=str(tmp_path / "test.db"), heartbeat_interval_secs=0.05
+        ),
+        mcp=McpConfig(command="nostrdesk-mcp"),
+        identities=[
+            IdentityConfig(
+                label="alice",
+                npub="npub1alice",
+                passphrase_ref="env:ALICE",
+                operator_npub="npub1op",
+            )
+        ],
+        projects=[
+            ProjectConfig(
+                id="proj-1",
+                name="Proj",
+                repo_path="/repo",
+                identity="alice",
+                escalation_dm_target="npub1op",
+                check_in_interval_hours=24.0,
+            )
+        ],
+    )
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.ApprovalRequestWatcher") as MockApprovalWatcher, \
+         patch("deskbridge.supervisor.ScheduledCheckInWatcher") as MockCheckInWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
+
+        MockMcpClient.return_value.connect.return_value = mock_client_ctx
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+        MockApprovalWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockCheckInWatcher.return_value.run = Mock(side_effect=never_finishes)
+
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
+        MockStore.return_value = mock_store_instance
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockCheckInWatcher.assert_called_once_with(
+        identity_label="alice",
+        identity_id="acc-alice",
+        operator_npub="npub1op",
+        interval_hours=24.0,
+        prompt="Perform a project status check-in and report any blockers or progress.",
+        store=ANY,
+        client=ANY,
+        broker=mock_broker,
+        shutdown_event=ANY,
+    )
+    MockCheckInWatcher.return_value.run.assert_called_once()
+
+
+async def test_supervisor_no_checkin_watcher_when_interval_not_configured(
+    tmp_path, monkeypatch, mock_broker, mock_client_ctx
+):
+    monkeypatch.setenv("ALICE", "pass")
+    config = make_config(tmp_path)  # no projects — no check_in_interval_hours
+
+    with patch("deskbridge.supervisor.McpClient") as MockMcpClient, \
+         patch("deskbridge.supervisor.SessionBroker", return_value=mock_broker), \
+         patch("deskbridge.supervisor.apply_schema", new=AsyncMock()), \
+         patch("deskbridge.supervisor.bootstrap_accounts_from_config", new=AsyncMock()), \
+         patch("deskbridge.supervisor.DmWatcher") as MockDmWatcher, \
+         patch("deskbridge.supervisor.OutboxDrainer") as MockOutboxDrainer, \
+         patch("deskbridge.supervisor.WorkItemPoller") as MockWorkItemPoller, \
+         patch("deskbridge.supervisor.ScheduledCheckInWatcher") as MockCheckInWatcher, \
+         patch("deskbridge.supervisor.Store") as MockStore:
+
+        MockMcpClient.return_value.connect.return_value = mock_client_ctx
+
+        async def never_finishes():
+            await asyncio.Event().wait()
+
+        MockDmWatcher.return_value.run = Mock(side_effect=never_finishes)
+        MockOutboxDrainer.return_value.run = Mock(side_effect=never_finishes)
+        MockWorkItemPoller.return_value.run = Mock(side_effect=never_finishes)
+
+        mock_store_instance = AsyncMock()
+        mock_store_instance.get_project_groups = AsyncMock(return_value=[])
+        mock_store_instance.get_project_for_identity = AsyncMock(return_value=None)
+        MockStore.return_value = mock_store_instance
+
+        supervisor = Supervisor(config=config)
+
+        async def stop():
+            await asyncio.sleep(0.1)
+            supervisor.request_shutdown()
+
+        await asyncio.gather(supervisor.run(), stop())
+
+    MockCheckInWatcher.assert_not_called()

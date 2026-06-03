@@ -16,6 +16,7 @@ from deskbridge.dm.approval_watcher import ApprovalRequestWatcher
 from deskbridge.dm.kanban_watcher import KanbanWatcher
 from deskbridge.dm.outbox import OutboxDrainer
 from deskbridge.agent.poller import WorkItemPoller
+from deskbridge.agent.checkin_scheduler import ScheduledCheckInWatcher
 from deskbridge.mcp import McpClient, SessionBroker
 
 log = structlog.get_logger()
@@ -66,6 +67,7 @@ class Supervisor:
                 drainer_task: asyncio.Task | None = None
                 poller_tasks: list[asyncio.Task] = []
                 kanban_watcher_tasks: list[asyncio.Task] = []
+                checkin_watcher_tasks: list[asyncio.Task] = []
 
                 try:
                     await broker.unlock_all()
@@ -173,6 +175,33 @@ class Supervisor:
                                 )
                             )
 
+                    for identity in self._config.identities:
+                        project_cfg = next(
+                            (p for p in self._config.projects if p.identity == identity.label),
+                            None,
+                        )
+                        if (
+                            project_cfg
+                            and project_cfg.check_in_interval_hours
+                            and identity.operator_npub
+                        ):
+                            checkin_watcher_tasks.append(
+                                asyncio.create_task(
+                                    ScheduledCheckInWatcher(
+                                        identity_label=identity.label,
+                                        identity_id=f"acc-{identity.label}",
+                                        operator_npub=identity.operator_npub,
+                                        interval_hours=project_cfg.check_in_interval_hours,
+                                        prompt=project_cfg.check_in_prompt,
+                                        store=store,
+                                        client=client,
+                                        broker=broker,
+                                        shutdown_event=self._shutdown_event,
+                                    ).run(),
+                                    name=f"checkin_watcher_{identity.label}",
+                                )
+                            )
+
                     interval = self._config.supervisor.heartbeat_interval_secs
                     while not self._shutdown_event.is_set():
                         await broker.refresh_if_needed()
@@ -192,6 +221,7 @@ class Supervisor:
                         + approval_watcher_tasks
                         + poller_tasks
                         + kanban_watcher_tasks
+                        + checkin_watcher_tasks
                         + ([drainer_task] if drainer_task is not None else [])
                     )
                     for task in tasks_to_cancel:
