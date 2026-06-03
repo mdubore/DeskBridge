@@ -42,6 +42,11 @@ class ScheduledCheckInWatcher:
             while not self._shutdown_event.is_set():
                 current_time = time.time()
                 current_bucket = int(current_time // self._interval_secs)
+                # Fire immediately for the current bucket — no initial sleep.
+                # The idempotency key prevents duplicate work items if the daemon
+                # restarts mid-interval. A restart near a bucket boundary may
+                # trigger two check-ins in quick succession (one per bucket); this
+                # is intentional and visible to the operator via two DMs.
                 try:
                     await self._check_and_queue(current_bucket)
                 except Exception:

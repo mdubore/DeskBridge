@@ -134,3 +134,18 @@ async def test_checkin_direct_check_and_queue_uses_given_bucket():
     call_kwargs = store.upsert_work_item.call_args.kwargs
     assert call_kwargs["idempotency_key"] == "checkin-acc-alice-99"
     assert call_kwargs["source_type"] == "scheduled"
+
+
+async def test_checkin_summary_truncated_to_200_chars():
+    store = make_store()
+    shutdown = asyncio.Event()
+    long_prompt = "x" * 300
+    watcher = make_watcher(store, shutdown, prompt=long_prompt)
+
+    await watcher._check_and_queue(current_bucket=1)
+
+    call_kwargs = store.upsert_work_item.call_args.kwargs
+    assert len(call_kwargs["summary"]) == 200
+    assert call_kwargs["summary"] == "x" * 200
+    payload = json.loads(call_kwargs["payload_json"])
+    assert len(payload["prompt"]) == 300
