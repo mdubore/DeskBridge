@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import json
 import structlog
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -170,3 +171,16 @@ class AgentRunner:
                     )
                 except Exception:
                     log.exception("agent_runner_board_update_failed", run_id=run_id)
+
+        # 10. Notify operator_npub for scheduled check-ins
+        if work_item["source_type"] == "scheduled":
+            payload = json.loads(work_item["payload_json"])
+            operator_npub = payload.get("operator_npub")
+            if operator_npub:
+                await self._store.insert_outbox_item(
+                    id=str(uuid4()),
+                    identity_id=f"acc-{project.identity}",
+                    dest_pubkey=operator_npub,
+                    message_text=result_text,
+                    idempotency_key=f"deskbridge:{run_id}:checkin_result",
+                )

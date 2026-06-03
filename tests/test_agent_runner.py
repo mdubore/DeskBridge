@@ -280,3 +280,51 @@ async def test_runner_prompt_instruction_not_truncated_on_long_task():
     assert len(prompt) == 4000
     assert prompt[:instruction_len] == _APPROVAL_INSTRUCTION
     assert task_portion == expected_task
+
+
+async def test_scheduled_completion_dms_operator_npub():
+    work_item = _row(
+        id="wi-1",
+        source_type="scheduled",
+        source_id="scheduled",
+        summary="Check status.",
+        payload_json='{"prompt": "Check status.", "operator_npub": "npub1op"}',
+    )
+    store = make_store()
+    proc = make_proc(returncode=0, stdout_lines=[b"check-in complete\n"])
+
+    with patch("asyncio.create_subprocess_exec", return_value=proc):
+        runner = make_runner(work_item, project=PROJ_NO_DM, store=store)
+        await runner.run()
+
+    outbox_calls = store.insert_outbox_item.call_args_list
+    checkin_calls = [
+        c for c in outbox_calls
+        if "checkin_result" in (c.kwargs.get("idempotency_key") or "")
+    ]
+    assert len(checkin_calls) == 1
+    assert checkin_calls[0].kwargs["dest_pubkey"] == "npub1op"
+    assert "check-in complete" in checkin_calls[0].kwargs["message_text"]
+
+
+async def test_non_scheduled_completion_does_not_send_checkin_dm():
+    work_item = _row(
+        id="wi-1",
+        source_type="dm",
+        source_id="msg-1",
+        summary="fix bug",
+        payload_json="{}",
+    )
+    store = make_store()
+    proc = make_proc(returncode=0)
+
+    with patch("asyncio.create_subprocess_exec", return_value=proc):
+        runner = make_runner(work_item, project=PROJ_NO_DM, store=store)
+        await runner.run()
+
+    outbox_calls = store.insert_outbox_item.call_args_list
+    checkin_calls = [
+        c for c in outbox_calls
+        if "checkin_result" in (c.kwargs.get("idempotency_key") or "")
+    ]
+    assert len(checkin_calls) == 0
