@@ -176,3 +176,34 @@ def test_project_config_kanban_fields_parse_from_toml(tmp_path):
     assert proj.boards == ["ch-abc", "ch-def"]
     assert proj.kanban_column_in_progress == "doing"
     assert proj.kanban_column_done == "finished"
+
+
+def test_project_config_check_in_interval_hours_accepted(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(MINIMAL_CONFIG.rstrip() + "\ncheck_in_interval_hours = 24.0\n")
+    config = load_config(cfg_file)
+    assert config.projects[0].check_in_interval_hours == 24.0
+
+
+def test_project_config_check_in_fields_absent_by_default(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(MINIMAL_CONFIG)
+    config = load_config(cfg_file)
+    assert config.projects[0].check_in_interval_hours is None
+    assert config.projects[0].check_in_prompt == (
+        "Perform a project status check-in and report any blockers or progress."
+    )
+
+
+def test_project_config_check_in_interval_zero_rejected(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(MINIMAL_CONFIG.rstrip() + "\ncheck_in_interval_hours = 0.0\n")
+    with pytest.raises(ConfigError):
+        load_config(cfg_file)
+
+
+def test_project_config_check_in_interval_negative_rejected(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(MINIMAL_CONFIG.rstrip() + "\ncheck_in_interval_hours = -1.0\n")
+    with pytest.raises(ConfigError):
+        load_config(cfg_file)

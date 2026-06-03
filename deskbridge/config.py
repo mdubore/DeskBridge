@@ -79,6 +79,10 @@ class ProjectConfig(BaseModel):
     boards: list[str] = Field(default_factory=list)
     kanban_column_in_progress: str = "in_progress"
     kanban_column_done: str = "done"
+    check_in_interval_hours: float | None = Field(default=None, gt=0)
+    check_in_prompt: str = (
+        "Perform a project status check-in and report any blockers or progress."
+    )
 
 
 class DeskBridgeConfig(BaseModel):
