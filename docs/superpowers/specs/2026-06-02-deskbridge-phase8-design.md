@@ -57,7 +57,10 @@ class ScheduledCheckInWatcher:
         client: McpClient,
         broker: SessionBroker,
         shutdown_event: asyncio.Event,
-    ) -> None: ...
+    ) -> None:
+        # interval_hours is validated > 0 at config parse time (see ProjectConfig)
+        self._interval_secs = interval_hours * 3600
+        ...
 ```
 
 **`run()` behavior:**
@@ -68,8 +71,13 @@ Each iteration:
 3. Otherwise, call `store.upsert_work_item(...)` with `idempotency_key=f"checkin-{identity_id}-{current_bucket}"`. If it returns `False` (key already exists — daemon restart mid-interval), log `checkin_already_queued`. If it returns `True`, log `checkin_work_item_created`.
 4. Sleep until the next bucket boundary:
    ```python
-   next_bucket_time = (current_bucket + 1) * interval_secs
+   next_bucket_time = (current_bucket + 1) * self._interval_secs
    sleep_duration = next_bucket_time - time.time()
+   log.debug(
+       "checkin_sleeping",
+       next_checkin_utc=datetime.utcfromtimestamp(next_bucket_time).isoformat() + "Z",
+       sleep_secs=round(sleep_duration, 1),
+   )
    try:
        await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_duration)
    except asyncio.TimeoutError:
@@ -145,9 +153,11 @@ for identity in self._config.identities:
 **File:** `deskbridge/config.py`
 
 ```python
-check_in_interval_hours: float | None = None
+check_in_interval_hours: float | None = Field(default=None, gt=0)
 check_in_prompt: str = "Perform a project status check-in and report any blockers or progress."
 ```
+
+`Field(gt=0)` causes Pydantic to reject `0.0` or negative values at config parse time, before any watcher is spawned.
 
 ---
 
