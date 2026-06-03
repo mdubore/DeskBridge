@@ -531,8 +531,6 @@ async def test_supervisor_spawns_checkin_watcher_when_interval_configured(
         interval_hours=24.0,
         prompt="Perform a project status check-in and report any blockers or progress.",
         store=ANY,
-        client=ANY,
-        broker=mock_broker,
         shutdown_event=ANY,
     )
     MockCheckInWatcher.return_value.run.assert_called_once()

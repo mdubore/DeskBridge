@@ -20,8 +20,6 @@ def make_watcher(store, shutdown, *, interval_hours=24.0, prompt="Check status."
         interval_hours=interval_hours,
         prompt=prompt,
         store=store,
-        client=MagicMock(),
-        broker=MagicMock(),
         shutdown_event=shutdown,
     )
 

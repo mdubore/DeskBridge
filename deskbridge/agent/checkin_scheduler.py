@@ -7,8 +7,6 @@ from uuid import uuid4
 import structlog
 
 from deskbridge.db.store import Store
-from deskbridge.mcp.client import McpClient
-from deskbridge.mcp.session import SessionBroker
 
 log = structlog.get_logger()
 
@@ -22,8 +20,6 @@ class ScheduledCheckInWatcher:
         interval_hours: float,
         prompt: str,
         store: Store,
-        client: McpClient,
-        broker: SessionBroker,
         shutdown_event: asyncio.Event,
     ) -> None:
         self._identity_label = identity_label
@@ -32,8 +28,6 @@ class ScheduledCheckInWatcher:
         self._interval_secs = interval_hours * 3600
         self._prompt = prompt
         self._store = store
-        self._client = client
-        self._broker = broker
         self._shutdown_event = shutdown_event
 
     async def run(self) -> None:

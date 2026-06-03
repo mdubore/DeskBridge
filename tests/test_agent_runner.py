@@ -353,3 +353,27 @@ async def test_scheduled_no_operator_npub_skips_checkin_dm():
         if "checkin_result" in (c.kwargs.get("idempotency_key") or "")
     ]
     assert len(checkin_calls) == 0
+
+
+async def test_scheduled_malformed_payload_json_does_not_fail_run():
+    work_item = _row(
+        id="wi-1",
+        source_type="scheduled",
+        source_id="scheduled",
+        summary="Check status.",
+        payload_json="not-json",
+    )
+    store = make_store()
+    proc = make_proc(returncode=0, stdout_lines=[b"done\n"])
+
+    with patch("asyncio.create_subprocess_exec", return_value=proc):
+        runner = make_runner(work_item, project=PROJ_NO_DM, store=store)
+        await runner.run()  # must not raise
+
+    store.complete_work_item.assert_awaited_once_with("wi-1", status="done")
+    outbox_calls = store.insert_outbox_item.call_args_list
+    checkin_calls = [
+        c for c in outbox_calls
+        if "checkin_result" in (c.kwargs.get("idempotency_key") or "")
+    ]
+    assert len(checkin_calls) == 0

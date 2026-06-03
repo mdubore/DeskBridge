@@ -170,8 +170,6 @@ class Supervisor:
                                         interval_hours=project_cfg.check_in_interval_hours,
                                         prompt=project_cfg.check_in_prompt,
                                         store=store,
-                                        client=client,
-                                        broker=broker,
                                         shutdown_event=self._shutdown_event,
                                     ).run(),
                                     name=f"checkin_watcher_{identity.label}",
