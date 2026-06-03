@@ -62,11 +62,24 @@ class ScheduledCheckInWatcher:
 
 **`run()` behavior:**
 
-1. Sleep for `interval_hours * 3600` seconds before the first check-in (no immediate fire on startup). Uses `asyncio.wait_for(shutdown_event.wait(), timeout=interval_secs)` — same pattern as the rest of the codebase.
-2. Call `store.get_latest_dispatched_work_item(identity_id)`. If an active run is found, log `checkin_skipped_agent_busy` and loop (skip, not queue).
-3. Call `store.upsert_work_item(...)`. If `idempotency_key` already exists (restart mid-interval), `upsert_work_item` returns `False` — log `checkin_already_queued` and loop.
-4. If inserted, log `checkin_work_item_created`.
+Each iteration:
+1. Compute the current bucket: `current_bucket = int(time.time() // interval_secs)`.
+2. Call `store.get_latest_dispatched_work_item(identity_id)`. If an active run is found, log `checkin_skipped_agent_busy`.
+3. Otherwise, call `store.upsert_work_item(...)` with `idempotency_key=f"checkin-{identity_id}-{current_bucket}"`. If it returns `False` (key already exists — daemon restart mid-interval), log `checkin_already_queued`. If it returns `True`, log `checkin_work_item_created`.
+4. Sleep until the next bucket boundary:
+   ```python
+   next_bucket_time = (current_bucket + 1) * interval_secs
+   sleep_duration = next_bucket_time - time.time()
+   try:
+       await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_duration)
+   except asyncio.TimeoutError:
+       pass
+   ```
 5. Exceptions caught and logged, loop continues.
+
+**On startup:** the watcher checks the current bucket immediately (no initial sleep). Because `upsert_work_item` enforces the idempotency key, a restart mid-interval is a safe no-op — operators get immediate confirmation their config is working if a new bucket is open, or a silent no-op if the check-in already ran.
+
+**Note:** If the daemon starts within seconds of a bucket boundary, two check-ins may fire in rapid succession (one for the ending bucket, one for the new bucket). This is correct behavior — both have distinct idempotency keys — and is visible to the operator via two DMs.
 
 ---
 
@@ -155,9 +168,10 @@ check_in_prompt: str = "Perform a project status check-in and report any blocker
 ## Testing
 
 **`ScheduledCheckInWatcher` tests:**
-- Inserts work item after interval elapses
+- Inserts work item immediately on first iteration when bucket is new
+- No-ops on first iteration when idempotency key already exists (daemon restart mid-interval)
 - Skips (no insert) when active run exists
-- No-ops when idempotency key already present (daemon restart mid-interval)
+- Sleeps to next bucket boundary, not a fixed interval
 - Shutdown event stops the loop cleanly
 - Exception in upsert is caught and logged; loop continues
 
