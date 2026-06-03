@@ -172,15 +172,24 @@ class AgentRunner:
                 except Exception:
                     log.exception("agent_runner_board_update_failed", run_id=run_id)
 
-        # 10. Notify operator_npub for scheduled check-ins
+        # 10. Notify operator_npub for scheduled check-ins (best-effort)
+        # Note: step 8 also fires for scheduled items if escalation_dm_target is set,
+        # which may result in two DMs if operator_npub == escalation_dm_target.
         if work_item["source_type"] == "scheduled":
-            payload = json.loads(work_item["payload_json"])
-            operator_npub = payload.get("operator_npub")
+            try:
+                payload = json.loads(work_item["payload_json"])
+                operator_npub = payload.get("operator_npub")
+            except Exception:
+                log.warning("agent_runner_bad_scheduled_payload", run_id=run_id)
+                operator_npub = None
             if operator_npub:
-                await self._store.insert_outbox_item(
-                    id=str(uuid4()),
-                    identity_id=f"acc-{project.identity}",
-                    dest_pubkey=operator_npub,
-                    message_text=result_text,
-                    idempotency_key=f"deskbridge:{run_id}:checkin_result",
-                )
+                try:
+                    await self._store.insert_outbox_item(
+                        id=str(uuid4()),
+                        identity_id=f"acc-{project.identity}",
+                        dest_pubkey=operator_npub,
+                        message_text=result_text,
+                        idempotency_key=f"deskbridge:{run_id}:checkin_result",
+                    )
+                except Exception:
+                    log.exception("agent_runner_checkin_dm_failed", run_id=run_id)

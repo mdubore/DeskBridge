@@ -293,6 +293,8 @@ async def test_scheduled_completion_dms_operator_npub():
     store = make_store()
     proc = make_proc(returncode=0, stdout_lines=[b"check-in complete\n"])
 
+    # Use PROJ_NO_DM so step 8 (escalation_dm_target) does not fire,
+    # keeping insert_outbox_item calls attributable solely to step 10.
     with patch("asyncio.create_subprocess_exec", return_value=proc):
         runner = make_runner(work_item, project=PROJ_NO_DM, store=store)
         await runner.run()
@@ -317,6 +319,29 @@ async def test_non_scheduled_completion_does_not_send_checkin_dm():
     )
     store = make_store()
     proc = make_proc(returncode=0)
+
+    with patch("asyncio.create_subprocess_exec", return_value=proc):
+        runner = make_runner(work_item, project=PROJ_NO_DM, store=store)
+        await runner.run()
+
+    outbox_calls = store.insert_outbox_item.call_args_list
+    checkin_calls = [
+        c for c in outbox_calls
+        if "checkin_result" in (c.kwargs.get("idempotency_key") or "")
+    ]
+    assert len(checkin_calls) == 0
+
+
+async def test_scheduled_no_operator_npub_skips_checkin_dm():
+    work_item = _row(
+        id="wi-1",
+        source_type="scheduled",
+        source_id="scheduled",
+        summary="Check status.",
+        payload_json='{"prompt": "Check status."}',
+    )
+    store = make_store()
+    proc = make_proc(returncode=0, stdout_lines=[b"done\n"])
 
     with patch("asyncio.create_subprocess_exec", return_value=proc):
         runner = make_runner(work_item, project=PROJ_NO_DM, store=store)
