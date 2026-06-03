@@ -18,7 +18,7 @@ class ScheduledCheckInWatcher:
         self,
         identity_label: str,
         identity_id: str,
-        operator_npub: str,
+        operator_npub: str | None,
         interval_hours: float,
         prompt: str,
         store: Store,

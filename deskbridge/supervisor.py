@@ -156,30 +156,6 @@ class Supervisor:
                                     name=f"kanban_watcher_{identity.label}",
                                 ))
 
-                    for identity in self._config.identities:
-                        groups = await store.get_project_groups(f"acc-{identity.label}")
-                        if groups:
-                            group_watcher_tasks.append(
-                                asyncio.create_task(
-                                    GroupWatcher(
-                                        identity_label=identity.label,
-                                        identity_npub=identity.npub,
-                                        operator_npub=identity.operator_npub,
-                                        group_ids=groups,
-                                        store=store,
-                                        client=client,
-                                        broker=broker,
-                                        shutdown_event=self._shutdown_event,
-                                    ).run(),
-                                    name=f"group_watcher_{identity.label}",
-                                )
-                            )
-
-                    for identity in self._config.identities:
-                        project_cfg = next(
-                            (p for p in self._config.projects if p.identity == identity.label),
-                            None,
-                        )
                         if (
                             project_cfg
                             and project_cfg.check_in_interval_hours
@@ -199,6 +175,25 @@ class Supervisor:
                                         shutdown_event=self._shutdown_event,
                                     ).run(),
                                     name=f"checkin_watcher_{identity.label}",
+                                )
+                            )
+
+                    for identity in self._config.identities:
+                        groups = await store.get_project_groups(f"acc-{identity.label}")
+                        if groups:
+                            group_watcher_tasks.append(
+                                asyncio.create_task(
+                                    GroupWatcher(
+                                        identity_label=identity.label,
+                                        identity_npub=identity.npub,
+                                        operator_npub=identity.operator_npub,
+                                        group_ids=groups,
+                                        store=store,
+                                        client=client,
+                                        broker=broker,
+                                        shutdown_event=self._shutdown_event,
+                                    ).run(),
+                                    name=f"group_watcher_{identity.label}",
                                 )
                             )
 
