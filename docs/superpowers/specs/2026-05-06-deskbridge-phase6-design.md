@@ -181,7 +181,7 @@ The catch must only intercept exceptions that carry a structured `.data` dict. P
    - `expires_at` present → convert from Unix timestamp to ISO 8601: `datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")`; if absent or not a number, store `None`
    - `display_payload_json` valid JSON string → use as DM display content
    - `display_payload_json` present but not valid JSON → DM display is `{"raw_display_payload": "<raw string>"}`; log `approval_watcher_invalid_display_payload`
-   - `display_payload_json` absent → DM display is `"(details unavailable)"`; `request_payload_json` is stored in `action_description` for internal reference only, never included in the operator DM
+   - `display_payload_json` absent → DM display is `"(details unavailable)"`; `request_payload_json` is stored in `approvals.request_text` for internal reference only, never in `action_description` or any operator DM
 4. For each valid item, call:
    ```python
    store.insert_approval(
@@ -192,7 +192,7 @@ The catch must only intercept exceptions that carry a structured `.data` dict. P
        expires_at=expires_at_iso,
        identity_id=self._account_id,
        scope=None,
-       request_text=None,
+       request_text=request_payload_json,
    )
    ```
    `INSERT OR IGNORE` on the `mcp_approval_id` unique index makes this idempotent — repeated polls produce no duplicate rows.
@@ -251,7 +251,8 @@ await self._client.call_tool(
 
 | MCP outcome | `store.resolve_approval` | Operator DM reply |
 |---|---|---|
-| Success (`ok: true`) | Call → `approved` / `rejected` (from response `status`) | `"Approved."` / `"Denied."` |
+| Success: `ok: true`, `approval_request_id` matches, `status` ∈ `{"approved","denied"}` | Call → `"approved"` / `"rejected"` | `"Approved."` / `"Denied."` |
+| Success but any condition fails (ID mismatch, unknown status, ok not true) | **Do not call** — leave pending | `"Failed to record decision — please check logs."` |
 | `approval_already_resolved` | Call → status from `error.data.status` (`"approved"` if `"approved"`, `"rejected"` otherwise); default `"rejected"` if absent | `"Decision received, but the approval was already resolved or has expired."` |
 | `approval_expired` | Call → `"rejected"` (treat as terminal) | `"Decision received, but the approval was already resolved or has expired."` |
 | `approval_not_found` | Call → `"rejected"` (treat as terminal) | `"Decision received, but the approval was already resolved or has expired."` |
@@ -305,9 +306,41 @@ The approval instruction is never truncated. The truncation guard applies only t
 
 ---
 
-### `deskbridge/dm/group_watcher.py` — no change
+### `deskbridge/dm/group_watcher.py` — disable group approval intents
 
-Approval commands (`approve` / `reject`) are DM-only in Phase 6. `GroupWatcher` handles @mention-routed messages and does not parse approval intents. An operator who sends "approve" as a group @mention will receive no response from DeskBridge; the pending approval will remain open until resolved via DM. This constraint is intentional: approval decisions are sensitive and should go through the authenticated operator DM channel, not a group chat where other participants may be present. No changes to `GroupWatcher` in this phase.
+Approval commands (`approve` / `reject`) are DM-only in Phase 6. The existing `GroupWatcher._handle_approve` and `_handle_reject` currently resolve approvals locally via `store.resolve_approval` without ever calling NostrDesk — this was never correct.
+
+**Phase 6 change:** Replace both handler bodies with a group-channel reply directing the operator to use DM. Make no DB writes and no MCP calls from the group context.
+
+```python
+async def _handle_approve(self, msg: dict) -> None:
+    try:
+        await self._store.insert_outbox_item(
+            str(uuid.uuid4()),
+            self._account_id,
+            None,
+            "Approval decisions must be sent via direct message, not group chat.",
+            f"approve-reply-{msg['id']}",
+            dest_group_id=msg["group_id"],
+        )
+    except Exception:
+        log.exception("group_watcher_handle_approve_error", identity=self._identity_label)
+
+async def _handle_reject(self, msg: dict) -> None:
+    try:
+        await self._store.insert_outbox_item(
+            str(uuid.uuid4()),
+            self._account_id,
+            None,
+            "Approval decisions must be sent via direct message, not group chat.",
+            f"reject-reply-{msg['id']}",
+            dest_group_id=msg["group_id"],
+        )
+    except Exception:
+        log.exception("group_watcher_handle_reject_error", identity=self._identity_label)
+```
+
+An operator who approves via group @mention receives a "use DM" reply to the group. The pending approval stays open. This is intentional: approval decisions are sensitive and must go through the authenticated operator DM channel, not a group chat where other participants may be present.
 
 ---
 
