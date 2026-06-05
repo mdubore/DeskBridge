@@ -74,7 +74,7 @@ class AgentRunner:
         project = self._project
         run_id = self._run_id
 
-        log_ctx: dict = {"run_id": run_id, "adapter": project.adapter}
+        log_ctx: dict[str, str | None] = {"run_id": run_id, "adapter": project.adapter}
         if project.adapter == "openclaw":
             log_ctx["openclaw_agent_id"] = project.openclaw_agent_id
         log.info("agent_runner_start", **log_ctx)
