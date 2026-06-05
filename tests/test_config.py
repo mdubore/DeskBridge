@@ -242,6 +242,6 @@ def test_adapter_known_values_accepted(adapter):
 
 def test_adapter_unknown_value_raises_config_error(tmp_path):
     cfg_file = tmp_path / "config.toml"
-    cfg_file.write_text(MINIMAL_CONFIG.rstrip() + '\nadapter = "hermes"\n')
-    with pytest.raises(ConfigError, match="hermes"):
+    cfg_file.write_text(MINIMAL_CONFIG.rstrip() + '\nadapter = "voltron"\n')
+    with pytest.raises(ConfigError, match="voltron"):
         load_config(cfg_file)

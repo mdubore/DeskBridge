@@ -18,8 +18,8 @@ def test_gemini_command():
 
 
 def test_unknown_adapter_raises():
-    with pytest.raises(ValueError, match="hermes"):
-        build_command("hermes", "/repo", "do the thing")
+    with pytest.raises(ValueError, match="voltron"):
+        build_command("voltron", "/repo", "do the thing")
 
 
 def test_known_adapters_matches_build_command():
