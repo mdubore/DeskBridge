@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN adapter TEXT NOT NULL DEFAULT 'claude-code'",
+    "ALTER TABLE projects ADD COLUMN openclaw_agent_id TEXT",
 ]
 
 

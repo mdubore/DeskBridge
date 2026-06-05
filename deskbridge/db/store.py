@@ -38,6 +38,7 @@ class Store:
         repo_path: str,
         identity_id: str,
         adapter: str,
+        openclaw_agent_id: str | None,
         boards_json: str,
         allowed_actions_json: str,
         escalation_dm_target: str | None,
@@ -45,20 +46,21 @@ class Store:
         async with self._conn.execute(
             """
             INSERT INTO projects
-                (id, name, repo_path, identity_id, adapter,
+                (id, name, repo_path, identity_id, adapter, openclaw_agent_id,
                  boards_json, allowed_actions_json, escalation_dm_target)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name                 = excluded.name,
                 repo_path            = excluded.repo_path,
                 identity_id          = excluded.identity_id,
                 adapter              = excluded.adapter,
+                openclaw_agent_id    = excluded.openclaw_agent_id,
                 boards_json          = excluded.boards_json,
                 allowed_actions_json = excluded.allowed_actions_json,
                 escalation_dm_target = excluded.escalation_dm_target
                 -- groups_json excluded: populated by relay sync, must survive restarts
             """,
-            (id, name, repo_path, identity_id, adapter,
+            (id, name, repo_path, identity_id, adapter, openclaw_agent_id,
              boards_json, allowed_actions_json, escalation_dm_target),
         ):
             pass
@@ -447,6 +449,7 @@ async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig)
             repo_path=project.repo_path,
             identity_id=f"acc-{project.identity}",
             adapter=project.adapter,
+            openclaw_agent_id=project.openclaw_agent_id,
             boards_json=json.dumps(project.boards),
             allowed_actions_json=json.dumps(project.allowed_autonomous_actions),
             escalation_dm_target=project.escalation_dm_target,
