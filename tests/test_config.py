@@ -1,6 +1,7 @@
 import textwrap
 import pytest
 from deskbridge.config import DeskBridgeConfig, load_config, ConfigError
+from deskbridge.agent.adapters import KNOWN_ADAPTERS
 
 
 MINIMAL_CONFIG = textwrap.dedent("""
@@ -228,7 +229,7 @@ def test_adapter_defaults_to_claude_code():
     assert proj.adapter == "claude-code"
 
 
-@pytest.mark.parametrize("adapter", ["claude-code", "codex", "gemini"])
+@pytest.mark.parametrize("adapter", sorted(KNOWN_ADAPTERS))
 def test_adapter_known_values_accepted(adapter):
     from deskbridge.config import ProjectConfig
     proj = ProjectConfig(
@@ -240,27 +241,7 @@ def test_adapter_known_values_accepted(adapter):
 
 
 def test_adapter_unknown_value_raises_config_error(tmp_path):
-    from deskbridge.config import ConfigError, load_config
-    config_text = """
-[supervisor]
-db_path = "/tmp/test.db"
-
-[mcp]
-command = "nostrdesk-mcp"
-
-[[identities]]
-label = "alice"
-npub = "npub1alice"
-passphrase_ref = "env:ALICE"
-
-[[projects]]
-id = "proj-1"
-name = "MyProject"
-repo_path = "/repo"
-identity = "alice"
-escalation_dm_target = "npub1op"
-adapter = "hermes"
-"""
-    (tmp_path / "config.toml").write_text(config_text)
-    with pytest.raises(ConfigError):
-        load_config(tmp_path / "config.toml")
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(MINIMAL_CONFIG.rstrip() + '\nadapter = "hermes"\n')
+    with pytest.raises(ConfigError, match="hermes"):
+        load_config(cfg_file)
