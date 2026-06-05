@@ -279,8 +279,8 @@ async def test_update_outbox_delivery_failed(store: Store, db_conn):
 
 async def _seed_project(conn, *, id="proj-1", identity_id="acc-alice") -> None:
     await conn.execute(
-        "INSERT INTO projects (id, name, repo_path, identity_id, agents_json) VALUES (?, ?, ?, ?, ?)",
-        (id, "MyProject", "/repo/myproject", identity_id, '["claude-code"]'),
+        "INSERT INTO projects (id, name, repo_path, identity_id, adapter) VALUES (?, ?, ?, ?, ?)",
+        (id, "MyProject", "/repo/myproject", identity_id, "claude-code"),
     )
     await conn.commit()
 
@@ -800,6 +800,25 @@ async def test_bootstrap_project_identity_reassignment(tmp_path):
         assert row is not None, "project must be findable under new identity"
         old_row = await store.get_project_for_identity("acc-alice")
         assert old_row is None, "project must not still map to old identity"
+
+
+async def test_upsert_project_writes_adapter(store: Store):
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:A"
+    )
+    await store.upsert_project(
+        id="proj-1",
+        name="MyProject",
+        repo_path="/repo",
+        identity_id="acc-alice",
+        adapter="codex",
+        boards_json="[]",
+        allowed_actions_json="[]",
+        escalation_dm_target=None,
+    )
+    row = await store.get_project_for_identity("acc-alice")
+    assert row is not None
+    assert row["adapter"] == "codex"
 
 
 async def test_apply_schema_adds_adapter_column(tmp_path):

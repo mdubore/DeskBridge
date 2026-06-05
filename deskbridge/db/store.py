@@ -37,7 +37,7 @@ class Store:
         name: str,
         repo_path: str,
         identity_id: str,
-        agents_json: str,
+        adapter: str,
         boards_json: str,
         allowed_actions_json: str,
         escalation_dm_target: str | None,
@@ -45,24 +45,21 @@ class Store:
         async with self._conn.execute(
             """
             INSERT INTO projects
-                (id, name, repo_path, identity_id, agents_json,
+                (id, name, repo_path, identity_id, adapter,
                  boards_json, allowed_actions_json, escalation_dm_target)
-                -- groups_json omitted: defaults to '[]', managed by relay sync
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name                 = excluded.name,
                 repo_path            = excluded.repo_path,
                 identity_id          = excluded.identity_id,
-                agents_json          = excluded.agents_json,
+                adapter              = excluded.adapter,
                 boards_json          = excluded.boards_json,
                 allowed_actions_json = excluded.allowed_actions_json,
                 escalation_dm_target = excluded.escalation_dm_target
                 -- groups_json excluded: populated by relay sync, must survive restarts
             """,
-            (
-                id, name, repo_path, identity_id, agents_json,
-                boards_json, allowed_actions_json, escalation_dm_target,
-            ),
+            (id, name, repo_path, identity_id, adapter,
+             boards_json, allowed_actions_json, escalation_dm_target),
         ):
             pass
         await self._conn.commit()
@@ -449,7 +446,7 @@ async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig)
             name=project.name,
             repo_path=project.repo_path,
             identity_id=f"acc-{project.identity}",
-            agents_json=json.dumps([project.adapter]),
+            adapter=project.adapter,
             boards_json=json.dumps(project.boards),
             allowed_actions_json=json.dumps(project.allowed_autonomous_actions),
             escalation_dm_target=project.escalation_dm_target,
