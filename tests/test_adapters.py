@@ -27,6 +27,11 @@ def test_openclaw_command():
     assert cmd == ["openclaw", "agent", "--agent", "my-agent", "--local", "--message", "do the thing"]
 
 
+def test_openclaw_missing_agent_id_raises():
+    with pytest.raises(ValueError, match="agent_id is required"):
+        build_command("openclaw", "/repo", "do the thing")
+
+
 def test_unknown_adapter_raises():
     with pytest.raises(ValueError, match="voltron"):
         build_command("voltron", "/repo", "do the thing")

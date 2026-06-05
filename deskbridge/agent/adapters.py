@@ -14,5 +14,7 @@ def build_command(adapter: str, repo_path: str, prompt: str, *, agent_id: str | 
         return ["hermes", "chat", "-Q", "-q", prompt]
     elif adapter == "openclaw":
         # workspace is pre-configured per agent at setup time (no per-invocation flag)
+        if agent_id is None:
+            raise ValueError("agent_id is required for the openclaw adapter")
         return ["openclaw", "agent", "--agent", agent_id, "--local", "--message", prompt]
     raise ValueError(f"Unknown adapter: {adapter!r}")
