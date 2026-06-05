@@ -34,6 +34,12 @@ def test_unknown_adapter_raises():
 
 def test_known_adapters_matches_build_command():
     for adapter in KNOWN_ADAPTERS:
-        cmd = build_command(adapter, "/repo", "test")
+        if adapter == "openclaw":
+            # openclaw requires agent_id; config validator ensures it's non-None at runtime
+            cmd = build_command(adapter, "/repo", "test", agent_id="test-agent")
+            assert "--agent" in cmd
+            assert "test-agent" in cmd
+        else:
+            cmd = build_command(adapter, "/repo", "test")
         assert isinstance(cmd, list)
         assert len(cmd) > 0
