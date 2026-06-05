@@ -9,7 +9,7 @@ from deskbridge.config import (
 ALICE = IdentityConfig(label="alice", npub="npub1alice", passphrase_ref="env:X")
 PROJ = ProjectConfig(
     id="proj-1", name="MyProj", repo_path="/repo",
-    identity="alice", escalation_dm_target="npub1op", agents=["claude-code"],
+    identity="alice", escalation_dm_target="npub1op", adapter="claude-code",
 )
 
 
