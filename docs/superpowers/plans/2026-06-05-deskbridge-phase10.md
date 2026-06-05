@@ -188,25 +188,21 @@ Expected: `test_openclaw_requires_agent_id` FAILS (no error raised yet); `test_o
 
 - [ ] **Step 3: Update `deskbridge/config.py`**
 
-Add `model_validator` to the pydantic import (line 6):
+**3a. Verify the `typing` import includes `Annotated`.** Find the `from typing import` line (search for it — don't rely on a line number). It should read:
+
+```python
+from typing import Annotated, Literal
+```
+
+If `Annotated` is missing, add it. `Annotated` is used by `check_in_interval_hours` in `ProjectConfig` and must be present.
+
+**3b. Add `model_validator` to the pydantic import.** Find the `from pydantic import` line and add `model_validator`:
 
 ```python
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 ```
 
-Add two new members to `ProjectConfig` after the `adapter_must_be_known` validator (before the class ends at line 95):
-
-```python
-    openclaw_agent_id: str | None = None
-
-    @model_validator(mode="after")
-    def openclaw_agent_id_required(self) -> "ProjectConfig":
-        if self.adapter == "openclaw" and not self.openclaw_agent_id:
-            raise ValueError("openclaw_agent_id is required when adapter='openclaw'")
-        return self
-```
-
-The full updated `ProjectConfig` class (lines 69–95 becoming 69–102):
+**3c. Add the new field and validator to `ProjectConfig`.** Find the `class ProjectConfig(BaseModel):` definition (search for it — line numbers may have shifted across phases). Add `openclaw_agent_id` and `openclaw_agent_id_required` after the existing `adapter_must_be_known` validator. The complete updated class body:
 
 ```python
 class ProjectConfig(BaseModel):
