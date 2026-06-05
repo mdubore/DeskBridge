@@ -137,9 +137,19 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 """
 
+_MIGRATIONS = [
+    "ALTER TABLE projects ADD COLUMN adapter TEXT NOT NULL DEFAULT 'claude-code'",
+]
+
 
 async def apply_schema(conn: aiosqlite.Connection) -> None:
     await conn.executescript(_DDL)
+    for migration in _MIGRATIONS:
+        try:
+            await conn.execute(migration)
+            await conn.commit()
+        except aiosqlite.OperationalError:
+            pass  # column already exists — safe to ignore
     await conn.execute("PRAGMA foreign_keys = ON")
     async with conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
         row = await cur.fetchone()

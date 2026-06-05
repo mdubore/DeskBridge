@@ -800,3 +800,24 @@ async def test_bootstrap_project_identity_reassignment(tmp_path):
         assert row is not None, "project must be findable under new identity"
         old_row = await store.get_project_for_identity("acc-alice")
         assert old_row is None, "project must not still map to old identity"
+
+
+async def test_apply_schema_adds_adapter_column(tmp_path):
+    db_path = tmp_path / "migration_test.db"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        async with conn.execute("PRAGMA table_info(projects)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+    assert "adapter" in cols
+
+
+async def test_apply_schema_migration_idempotent(tmp_path):
+    db_path = tmp_path / "migration_test2.db"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        await apply_schema(conn)  # second call must not raise
+        async with conn.execute("PRAGMA table_info(projects)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+    assert "adapter" in cols
