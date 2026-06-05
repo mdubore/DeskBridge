@@ -72,7 +72,7 @@ class ProjectConfig(BaseModel):
     repo_path: str
     identity: str
     escalation_dm_target: str
-    agents: list[str] = Field(default_factory=lambda: ["codex", "claude-code"])
+    adapter: str = "claude-code"
     allowed_autonomous_actions: list[str] = Field(
         default_factory=lambda: ["read", "send_dm", "update_task_status"]
     )
@@ -83,6 +83,15 @@ class ProjectConfig(BaseModel):
     check_in_prompt: str = (
         "Perform a project status check-in and report any blockers or progress."
     )
+
+    @field_validator("adapter")
+    @classmethod
+    def adapter_must_be_known(cls, v: str) -> str:
+        # Deferred import prevents circular imports if adapters.py ever needs config types.
+        from deskbridge.agent.adapters import KNOWN_ADAPTERS
+        if v not in KNOWN_ADAPTERS:
+            raise ValueError(f"Unknown adapter {v!r}. Known: {sorted(KNOWN_ADAPTERS)}")
+        return v
 
 
 class DeskBridgeConfig(BaseModel):

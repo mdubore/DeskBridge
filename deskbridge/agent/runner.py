@@ -5,6 +5,7 @@ import structlog
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from deskbridge.agent.adapters import build_command
 from deskbridge.config import ProjectConfig
 from deskbridge.db.store import Store
 from deskbridge.mcp.client import McpClient
@@ -77,17 +78,13 @@ class AgentRunner:
         await self._store.upsert_agent_run(
             id=run_id,
             work_item_id=work_item["id"],
-            adapter_type=project.agents[0],
+            adapter_type=project.adapter,
         )
 
         # 2. Build CLI command
-        adapter = project.agents[0]
         task_text = f"{work_item['summary']}\n\n{work_item['payload_json']}"
         prompt = _APPROVAL_INSTRUCTION + task_text[:4000 - len(_APPROVAL_INSTRUCTION)]
-        if adapter == "claude-code":
-            cmd = ["claude", "--project", project.repo_path, "--message", prompt]
-        else:
-            cmd = ["codex", "--dir", project.repo_path, prompt]
+        cmd = build_command(project.adapter, project.repo_path, prompt)
 
         # 3. Spawn subprocess
         proc = await asyncio.create_subprocess_exec(

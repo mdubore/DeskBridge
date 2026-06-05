@@ -217,3 +217,50 @@ def test_project_config_check_in_prompt_can_be_overridden(tmp_path):
     )
     config = load_config(cfg_file)
     assert config.projects[0].check_in_prompt == "Weekly sync: any blockers?"
+
+
+def test_adapter_defaults_to_claude_code():
+    from deskbridge.config import ProjectConfig
+    proj = ProjectConfig(
+        id="p1", name="MyProj", repo_path="/repo",
+        identity="alice", escalation_dm_target="npub1op",
+    )
+    assert proj.adapter == "claude-code"
+
+
+@pytest.mark.parametrize("adapter", ["claude-code", "codex", "gemini"])
+def test_adapter_known_values_accepted(adapter):
+    from deskbridge.config import ProjectConfig
+    proj = ProjectConfig(
+        id="p1", name="MyProj", repo_path="/repo",
+        identity="alice", escalation_dm_target="npub1op",
+        adapter=adapter,
+    )
+    assert proj.adapter == adapter
+
+
+def test_adapter_unknown_value_raises_config_error(tmp_path):
+    from deskbridge.config import ConfigError, load_config
+    config_text = """
+[supervisor]
+db_path = "/tmp/test.db"
+
+[mcp]
+command = "nostrdesk-mcp"
+
+[[identities]]
+label = "alice"
+npub = "npub1alice"
+passphrase_ref = "env:ALICE"
+
+[[projects]]
+id = "proj-1"
+name = "MyProject"
+repo_path = "/repo"
+identity = "alice"
+escalation_dm_target = "npub1op"
+adapter = "hermes"
+"""
+    (tmp_path / "config.toml").write_text(config_text)
+    with pytest.raises(ConfigError):
+        load_config(tmp_path / "config.toml")

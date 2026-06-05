@@ -449,7 +449,7 @@ async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig)
             name=project.name,
             repo_path=project.repo_path,
             identity_id=f"acc-{project.identity}",
-            agents_json=json.dumps(project.agents),
+            agents_json=json.dumps([project.adapter]),
             boards_json=json.dumps(project.boards),
             allowed_actions_json=json.dumps(project.allowed_autonomous_actions),
             escalation_dm_target=project.escalation_dm_target,
