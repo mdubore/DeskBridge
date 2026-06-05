@@ -7,5 +7,7 @@ def build_command(adapter: str, repo_path: str, prompt: str) -> list[str]:
     elif adapter == "codex":
         return ["codex", "--cwd", repo_path, "--no-interactive", prompt]
     elif adapter == "gemini":
+        # Gemini CLI has no --project/--cwd flag; repo_path is passed as cwd= on the subprocess.
         return ["gemini", "--yolo", "-p", prompt]
-    raise ValueError(f"Unknown adapter: {adapter!r}")
+    else:
+        raise ValueError(f"Unknown adapter: {adapter!r}")

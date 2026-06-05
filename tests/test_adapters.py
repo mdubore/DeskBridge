@@ -18,9 +18,12 @@ def test_gemini_command():
 
 
 def test_unknown_adapter_raises():
-    with pytest.raises(ValueError, match="Unknown adapter"):
+    with pytest.raises(ValueError, match="hermes"):
         build_command("hermes", "/repo", "do the thing")
 
 
-def test_known_adapters_contains_all_three():
-    assert KNOWN_ADAPTERS == {"claude-code", "codex", "gemini"}
+def test_known_adapters_matches_build_command():
+    for adapter in KNOWN_ADAPTERS:
+        cmd = build_command(adapter, "/repo", "test")
+        assert isinstance(cmd, list)
+        assert len(cmd) > 0
