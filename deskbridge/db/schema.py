@@ -148,8 +148,9 @@ async def apply_schema(conn: aiosqlite.Connection) -> None:
         try:
             await conn.execute(migration)
             await conn.commit()
-        except aiosqlite.OperationalError:
-            pass  # column already exists — safe to ignore
+        except aiosqlite.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
     await conn.execute("PRAGMA foreign_keys = ON")
     async with conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
         row = await cur.fetchone()
