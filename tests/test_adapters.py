@@ -17,6 +17,16 @@ def test_gemini_command():
     assert cmd == ["gemini", "--yolo", "-p", "do the thing"]
 
 
+def test_hermes_command():
+    cmd = build_command("hermes", "/repo", "do the thing")
+    assert cmd == ["hermes", "chat", "-Q", "-q", "do the thing"]
+
+
+def test_openclaw_command():
+    cmd = build_command("openclaw", "/repo", "do the thing", agent_id="my-agent")
+    assert cmd == ["openclaw", "agent", "--agent", "my-agent", "--local", "--message", "do the thing"]
+
+
 def test_unknown_adapter_raises():
     with pytest.raises(ValueError, match="voltron"):
         build_command("voltron", "/repo", "do the thing")

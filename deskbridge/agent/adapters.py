@@ -1,13 +1,18 @@
-KNOWN_ADAPTERS = {"claude-code", "codex", "gemini"}
+KNOWN_ADAPTERS = {"claude-code", "codex", "gemini", "hermes", "openclaw"}
 
 
-def build_command(adapter: str, repo_path: str, prompt: str) -> list[str]:
+def build_command(adapter: str, repo_path: str, prompt: str, *, agent_id: str | None = None) -> list[str]:
     if adapter == "claude-code":
         return ["claude", "--project", repo_path, "--message", prompt]
     elif adapter == "codex":
         return ["codex", "--cwd", repo_path, "--no-interactive", prompt]
     elif adapter == "gemini":
-        # Gemini CLI has no --project/--cwd flag; repo_path is passed as cwd= on the subprocess.
+        # repo_path passed as cwd= on subprocess
         return ["gemini", "--yolo", "-p", prompt]
-    else:
-        raise ValueError(f"Unknown adapter: {adapter!r}")
+    elif adapter == "hermes":
+        # repo_path passed as cwd= on subprocess; -Q suppresses banner/spinner
+        return ["hermes", "chat", "-Q", "-q", prompt]
+    elif adapter == "openclaw":
+        # workspace is pre-configured per agent at setup time (no per-invocation flag)
+        return ["openclaw", "agent", "--agent", agent_id, "--local", "--message", prompt]
+    raise ValueError(f"Unknown adapter: {adapter!r}")
