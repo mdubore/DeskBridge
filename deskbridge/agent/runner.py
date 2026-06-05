@@ -74,6 +74,11 @@ class AgentRunner:
         project = self._project
         run_id = self._run_id
 
+        log_ctx: dict = {"run_id": run_id, "adapter": project.adapter}
+        if project.adapter == "openclaw":
+            log_ctx["openclaw_agent_id"] = project.openclaw_agent_id
+        log.info("agent_runner_start", **log_ctx)
+
         # 1. Record the run
         await self._store.upsert_agent_run(
             id=run_id,
@@ -84,7 +89,7 @@ class AgentRunner:
         # 2. Build CLI command
         task_text = f"{work_item['summary']}\n\n{work_item['payload_json']}"
         prompt = _APPROVAL_INSTRUCTION + task_text[:4000 - len(_APPROVAL_INSTRUCTION)]
-        cmd = build_command(project.adapter, project.repo_path, prompt)
+        cmd = build_command(project.adapter, project.repo_path, prompt, agent_id=project.openclaw_agent_id)
 
         # 3. Spawn subprocess
         proc = await asyncio.create_subprocess_exec(
