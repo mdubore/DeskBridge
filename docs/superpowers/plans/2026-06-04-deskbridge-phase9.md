@@ -175,6 +175,14 @@ Expected: FAIL — `ProjectConfig` has no `adapter` field yet.
 
 - [ ] **Step 3: Update `deskbridge/config.py`**
 
+First, verify the imports at the top of `config.py` include `Annotated`. The current file has:
+
+```python
+from typing import Annotated, Literal
+```
+
+`Annotated` is needed for the existing `check_in_interval_hours` field. If it is missing for any reason, add it now — do not remove it.
+
 In `ProjectConfig`, replace:
 
 ```python
@@ -189,13 +197,14 @@ adapter: str = "claude-code"
 @field_validator("adapter")
 @classmethod
 def adapter_must_be_known(cls, v: str) -> str:
+    # Deferred import prevents circular imports if adapters.py ever needs config types.
     from deskbridge.agent.adapters import KNOWN_ADAPTERS
     if v not in KNOWN_ADAPTERS:
         raise ValueError(f"Unknown adapter {v!r}. Known: {sorted(KNOWN_ADAPTERS)}")
     return v
 ```
 
-The full updated `ProjectConfig` class (show in context so line numbers are clear):
+The full updated `ProjectConfig` class — copy this exactly, do not alter `check_in_interval_hours` or `check_in_prompt`:
 
 ```python
 class ProjectConfig(BaseModel):
