@@ -232,10 +232,12 @@ def test_adapter_defaults_to_claude_code():
 @pytest.mark.parametrize("adapter", sorted(KNOWN_ADAPTERS))
 def test_adapter_known_values_accepted(adapter):
     from deskbridge.config import ProjectConfig
+    extra = {"openclaw_agent_id": "test-agent"} if adapter == "openclaw" else {}
     proj = ProjectConfig(
         id="p1", name="MyProj", repo_path="/repo",
         identity="alice", escalation_dm_target="npub1op",
         adapter=adapter,
+        **extra,
     )
     assert proj.adapter == adapter
 
@@ -245,3 +247,19 @@ def test_adapter_unknown_value_raises_config_error(tmp_path):
     cfg_file.write_text(MINIMAL_CONFIG.rstrip() + '\nadapter = "voltron"\n')
     with pytest.raises(ConfigError, match="voltron"):
         load_config(cfg_file)
+
+
+def test_openclaw_requires_agent_id(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(MINIMAL_CONFIG.rstrip() + '\nadapter = "openclaw"\n')
+    with pytest.raises(ConfigError, match="openclaw_agent_id"):
+        load_config(cfg_file)
+
+
+def test_openclaw_with_agent_id_accepted(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        MINIMAL_CONFIG.rstrip() + '\nadapter = "openclaw"\nopenclaw_agent_id = "my-agent"\n'
+    )
+    cfg = load_config(cfg_file)
+    assert cfg.projects[0].openclaw_agent_id == "my-agent"

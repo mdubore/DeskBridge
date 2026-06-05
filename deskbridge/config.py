@@ -3,7 +3,7 @@ import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 try:
     import keyring as kr
@@ -73,6 +73,7 @@ class ProjectConfig(BaseModel):
     identity: str
     escalation_dm_target: str
     adapter: str = "claude-code"
+    openclaw_agent_id: str | None = None
     allowed_autonomous_actions: list[str] = Field(
         default_factory=lambda: ["read", "send_dm", "update_task_status"]
     )
@@ -92,6 +93,12 @@ class ProjectConfig(BaseModel):
         if v not in KNOWN_ADAPTERS:
             raise ValueError(f"Unknown adapter {v!r}. Known: {sorted(KNOWN_ADAPTERS)}")
         return v
+
+    @model_validator(mode="after")
+    def openclaw_agent_id_required(self) -> "ProjectConfig":
+        if self.adapter == "openclaw" and not self.openclaw_agent_id:
+            raise ValueError("openclaw_agent_id is required when adapter='openclaw'")
+        return self
 
 
 class DeskBridgeConfig(BaseModel):
