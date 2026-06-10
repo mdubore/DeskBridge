@@ -69,7 +69,7 @@ async def test_poller_pending_item_claimed_and_runner_spawned():
     shutdown = asyncio.Event()
     project_row = _row(id="proj-1")
     work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
-                     summary="fix bug", payload_json="{}")
+                     summary="fix bug", payload_json="{}", attempt_count=0)
     store = make_store(project_row=project_row, pending_items=[work_item])
 
     async def fake_run():
@@ -95,7 +95,7 @@ async def test_poller_skips_when_active_run_in_flight():
     shutdown = asyncio.Event()
     project_row = _row(id="proj-1")
     work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
-                     summary="fix bug", payload_json="{}")
+                     summary="fix bug", payload_json="{}", attempt_count=0)
     store = make_store(project_row=project_row, pending_items=[work_item])
 
     poller = make_poller(store, shutdown)
@@ -132,7 +132,7 @@ async def test_poller_cancellation_cancels_active_runner():
     shutdown = asyncio.Event()
     project_row = _row(id="proj-1")
     work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
-                     summary="fix bug", payload_json="{}")
+                     summary="fix bug", payload_json="{}", attempt_count=0)
     store = make_store(project_row=project_row, pending_items=[work_item])
 
     poller = make_poller(store, shutdown)
@@ -151,7 +151,7 @@ async def test_poller_completes_work_item_when_project_config_missing():
     shutdown = asyncio.Event()
     project_row = _row(id="proj-missing")  # DB has project but config has no matching entry
     work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
-                     summary="fix bug", payload_json="{}")
+                     summary="fix bug", payload_json="{}", attempt_count=0)
     store = make_store(project_row=project_row, pending_items=[work_item], claim_result=True)
     store.complete_work_item = AsyncMock()
 
