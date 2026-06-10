@@ -177,6 +177,18 @@ class WorkItemPoller:
                 self._active_run_task.cancel()
                 await asyncio.gather(self._active_run_task, return_exceptions=True)
                 await self._store.complete_work_item(self._active_work_item_id, "cancelled")
+                try:
+                    await self._store.log_audit(
+                        id=str(uuid4()),
+                        event_type="work_item_terminal",
+                        work_item_id=self._active_work_item_id,
+                        payload_json=json.dumps({
+                            "status": "cancelled",
+                            "attempt_count": row["attempt_count"],
+                        }),
+                    )
+                except Exception:
+                    log.warning("audit_log_failed", event_type="work_item_terminal", status="cancelled")
                 self._active_run_task = None
                 self._active_work_item_id = None
                 self._active_project_cfg = None
