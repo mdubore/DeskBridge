@@ -33,6 +33,9 @@ def make_store(*, project_row=None, pending_items=None, claim_result=True):
     store.get_project_for_identity = AsyncMock(return_value=project_row)
     store.get_pending_work_items = AsyncMock(return_value=pending_items or [])
     store.claim_work_item = AsyncMock(return_value=claim_result)
+    store.get_work_item = AsyncMock(return_value=None)
+    store.log_audit = AsyncMock()
+    store.retry_work_item = AsyncMock()
     return store
 
 
@@ -447,3 +450,88 @@ async def test_no_session_on_sync_logs_warning_and_dispatch_proceeds():
     client.call_tool.assert_not_awaited()
     store.claim_work_item.assert_awaited_once_with("wi-1")
     assert runner_called, "AgentRunner.run should be called even when session is unavailable"
+
+
+async def test_failed_run_below_max_attempts_requeues():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    work_item = _row(
+        id="wi-1", source_type="dm", source_id="msg-1",
+        summary="fix bug", payload_json="{}", attempt_count=0,
+    )
+    completed = _row(
+        id="wi-1", source_type="dm", source_id="msg-1",
+        status="failed", attempt_count=0,
+    )
+    store = make_store(project_row=project_row, pending_items=[work_item])
+    store.get_work_item = AsyncMock(return_value=completed)
+    store.complete_work_item = AsyncMock()
+
+    # Return item only once; after retry_work_item is called the cooldown filter
+    # would exclude it in production — simulate that here so the poller doesn't
+    # re-dispatch the same item on subsequent poll cycles.
+    pending_call_count = 0
+    async def pending_once(*args, **kwargs):
+        nonlocal pending_call_count
+        pending_call_count += 1
+        return [work_item] if pending_call_count == 1 else []
+    store.get_pending_work_items = AsyncMock(side_effect=pending_once)
+
+    async def fake_run():
+        pass  # completes immediately, runner writes status=failed to DB
+
+    with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
+
+        async def stop():
+            await asyncio.sleep(0.08)
+            shutdown.set()
+
+        poller = make_poller(store, shutdown)
+        await asyncio.gather(poller.run(), stop())
+
+    store.retry_work_item.assert_awaited_once()
+    call_args = store.retry_work_item.call_args
+    assert call_args[0][0] == "wi-1"  # id
+    # second arg is next_retry_at — just verify it's a non-empty string
+    assert isinstance(call_args[0][1], str) and len(call_args[0][1]) > 0
+
+
+async def test_failed_run_at_max_attempts_stays_failed():
+    # attempt_count=2, max_agent_attempts=3 → 2+1 == 3, not < 3 → terminal
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    work_item = _row(
+        id="wi-1", source_type="dm", source_id="msg-1",
+        summary="fix bug", payload_json="{}", attempt_count=2,
+    )
+    completed = _row(
+        id="wi-1", source_type="dm", source_id="msg-1",
+        status="failed", attempt_count=2,
+    )
+    store = make_store(project_row=project_row, pending_items=[work_item])
+    store.get_work_item = AsyncMock(return_value=completed)
+    store.complete_work_item = AsyncMock()
+
+    # Return item only once to avoid repeated dispatches within the test window.
+    pending_call_count = 0
+    async def pending_once(*args, **kwargs):
+        nonlocal pending_call_count
+        pending_call_count += 1
+        return [work_item] if pending_call_count == 1 else []
+    store.get_pending_work_items = AsyncMock(side_effect=pending_once)
+
+    async def fake_run():
+        pass
+
+    with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
+
+        async def stop():
+            await asyncio.sleep(0.08)
+            shutdown.set()
+
+        poller = make_poller(store, shutdown)
+        await asyncio.gather(poller.run(), stop())
+
+    store.retry_work_item.assert_not_awaited()

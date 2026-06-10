@@ -1,14 +1,22 @@
 import asyncio
+import json
 import structlog
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
 from deskbridge.agent.runner import AgentRunner
-from deskbridge.config import DeskBridgeConfig
+from deskbridge.config import DeskBridgeConfig, ProjectConfig
 from deskbridge.db.store import Store
 from deskbridge.mcp.client import McpClient
 from deskbridge.mcp.session import SessionBroker
 
 log = structlog.get_logger()
+
+
+def _iso_offset(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 class WorkItemPoller:
@@ -36,6 +44,7 @@ class WorkItemPoller:
         self._kanban_column_done = kanban_column_done
         self._active_run_task: asyncio.Task | None = None
         self._active_work_item_id: str | None = None
+        self._active_project_cfg: ProjectConfig | None = None
 
     async def _sync_card_column(
         self, card_id: str, column: str, idempotency_key: str
@@ -76,22 +85,86 @@ class WorkItemPoller:
             log.info("work_item_poller_stopped", identity=self._identity_label)
 
     async def _poll_once(self) -> None:
-        # Detect completed runner and fire done writeback for kanban items
+        # Detect completed runner
         if self._active_run_task is not None and self._active_run_task.done():
             if self._active_work_item_id is not None:
                 completed_item = await self._store.get_work_item(self._active_work_item_id)
-                if (
-                    completed_item is not None
-                    and completed_item["source_type"] == "kanban"
-                    and completed_item["status"] in ("done", "failed")
-                ):
-                    await self._sync_card_column(
-                        completed_item["source_id"],
-                        column=self._kanban_column_done,
-                        idempotency_key=f"deskbridge-{self._active_work_item_id}-done",
-                    )
+                if completed_item is not None:
+                    final_status = completed_item["status"]
+                    retried = False
+
+                    if final_status == "failed":
+                        if (
+                            self._active_project_cfg is not None
+                            and completed_item["attempt_count"] + 1
+                            < self._active_project_cfg.max_agent_attempts
+                        ):
+                            next_retry_at = _iso_offset(60)
+                            await self._store.retry_work_item(
+                                completed_item["id"], next_retry_at
+                            )
+                            retried = True
+                            try:
+                                await self._store.log_audit(
+                                    id=str(uuid4()),
+                                    event_type="work_item_retry_queued",
+                                    work_item_id=completed_item["id"],
+                                    payload_json=json.dumps({
+                                        "attempt_count": completed_item["attempt_count"],
+                                        "next_retry_at": next_retry_at,
+                                    }),
+                                )
+                            except Exception:
+                                log.warning(
+                                    "audit_log_failed",
+                                    event_type="work_item_retry_queued",
+                                )
+                        else:
+                            try:
+                                await self._store.log_audit(
+                                    id=str(uuid4()),
+                                    event_type="work_item_terminal",
+                                    work_item_id=completed_item["id"],
+                                    payload_json=json.dumps({
+                                        "status": "failed",
+                                        "attempt_count": completed_item["attempt_count"],
+                                    }),
+                                )
+                            except Exception:
+                                log.warning(
+                                    "audit_log_failed", event_type="work_item_terminal"
+                                )
+                    elif final_status in ("done", "interrupted", "cancelled"):
+                        try:
+                            await self._store.log_audit(
+                                id=str(uuid4()),
+                                event_type="work_item_terminal",
+                                work_item_id=completed_item["id"],
+                                payload_json=json.dumps({
+                                    "status": final_status,
+                                    "attempt_count": completed_item["attempt_count"],
+                                }),
+                            )
+                        except Exception:
+                            log.warning(
+                                "audit_log_failed",
+                                event_type="work_item_terminal",
+                                status=final_status,
+                            )
+
+                    if (
+                        not retried
+                        and final_status in ("done", "failed")
+                        and completed_item["source_type"] == "kanban"
+                    ):
+                        await self._sync_card_column(
+                            completed_item["source_id"],
+                            column=self._kanban_column_done,
+                            idempotency_key=f"deskbridge-{self._active_work_item_id}-done",
+                        )
             self._active_run_task = None
             self._active_work_item_id = None
+            self._active_project_cfg = None
 
         # Cancel runner if operator requested cancellation
         if (
@@ -106,6 +179,7 @@ class WorkItemPoller:
                 await self._store.complete_work_item(self._active_work_item_id, "cancelled")
                 self._active_run_task = None
                 self._active_work_item_id = None
+                self._active_project_cfg = None
                 return
 
         project = await self._store.get_project_for_identity(self._account_id)
@@ -148,6 +222,23 @@ class WorkItemPoller:
                     )
                 continue
 
+            try:
+                await self._store.log_audit(
+                    id=str(uuid4()),
+                    event_type="work_item_dispatched",
+                    work_item_id=row["id"],
+                    payload_json=json.dumps({
+                        "adapter": project_cfg.adapter,
+                        "attempt_count": row["attempt_count"],
+                    }),
+                )
+            except Exception:
+                log.warning(
+                    "audit_log_failed",
+                    event_type="work_item_dispatched",
+                    work_item_id=row["id"],
+                )
+
             runner = AgentRunner(
                 work_item=row,
                 project=project_cfg,
@@ -160,4 +251,5 @@ class WorkItemPoller:
                 runner.run(), name=f"agent_run_{row['id']}"
             )
             self._active_work_item_id = row["id"]
+            self._active_project_cfg = project_cfg
             break
