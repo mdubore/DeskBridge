@@ -1,6 +1,7 @@
 import asyncio
 import json
 import structlog
+from uuid import uuid4
 
 from deskbridge.config import IdentityConfig
 from deskbridge.db.store import Store
@@ -79,6 +80,18 @@ class OutboxDrainer:
                 row["id"], "delivered", json.dumps(result)
             )
             log.info("outbox_drainer_delivered", id=row["id"])
+            try:
+                await self._store.log_audit(
+                    id=str(uuid4()),
+                    event_type="outbox_delivered",
+                    identity_id=row["identity_id"],
+                    payload_json=json.dumps({
+                        "outbox_id": row["id"],
+                        "dest_pubkey": row["dest_pubkey"],
+                    }),
+                )
+            except Exception:
+                log.warning("audit_log_failed", event_type="outbox_delivered")
 
         except McpToolError as e:
             is_permanent = (
@@ -90,6 +103,19 @@ class OutboxDrainer:
                 {"error": e.mcp_error.message, "routing": str(e.routing)}
             )
             await self._store.update_outbox_delivery(row["id"], final_status, error_json)
+            if is_permanent:
+                try:
+                    await self._store.log_audit(
+                        id=str(uuid4()),
+                        event_type="outbox_delivery_failed",
+                        identity_id=row["identity_id"],
+                        payload_json=json.dumps({
+                            "outbox_id": row["id"],
+                            "attempts": row["delivery_attempts"] + 1,
+                        }),
+                    )
+                except Exception:
+                    log.warning("audit_log_failed", event_type="outbox_delivery_failed")
             log.error(
                 "outbox_drainer_send_failed",
                 id=row["id"],
