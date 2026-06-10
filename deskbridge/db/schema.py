@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN adapter TEXT NOT NULL DEFAULT 'claude-code'",
     "ALTER TABLE projects ADD COLUMN openclaw_agent_id TEXT",
+    "ALTER TABLE work_items ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE work_items ADD COLUMN next_retry_at TEXT",
 ]
 
 

@@ -261,6 +261,7 @@ class Store:
             """
             SELECT * FROM work_items
             WHERE status = 'pending' AND identity_id = ?
+              AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             ORDER BY priority, created_at
             LIMIT ?
             """,
@@ -329,6 +330,21 @@ class Store:
             WHERE id = ?
             """,
             (status, id),
+        ):
+            pass
+        await self._conn.commit()
+
+    async def retry_work_item(self, id: str, next_retry_at: str) -> None:
+        async with self._conn.execute(
+            """
+            UPDATE work_items
+            SET status = 'pending',
+                attempt_count = attempt_count + 1,
+                next_retry_at = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ?
+            """,
+            (next_retry_at, id),
         ):
             pass
         await self._conn.commit()

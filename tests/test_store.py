@@ -433,6 +433,59 @@ async def test_complete_work_item_sets_status(store: Store, db_conn):
 
 
 # ---------------------------------------------------------------------------
+# retry_work_item / get_pending_work_items cooldown
+# ---------------------------------------------------------------------------
+
+async def test_retry_work_item_resets_to_pending_and_increments_attempt_count(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, status="failed")
+    await store.retry_work_item("wi-1", "2030-01-01T00:01:00Z")
+    async with db_conn.execute(
+        "SELECT status, attempt_count, next_retry_at FROM work_items WHERE id='wi-1'"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending"
+    assert row["attempt_count"] == 1
+    assert row["next_retry_at"] == "2030-01-01T00:01:00Z"
+
+
+async def test_get_pending_work_items_skips_cooling_down(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    async with db_conn.execute(
+        "UPDATE work_items SET next_retry_at='2099-01-01T00:00:00Z' WHERE id='wi-1'"
+    ) as _:
+        pass
+    await db_conn.commit()
+    rows = await store.get_pending_work_items("acc-alice", limit=10)
+    assert rows == []
+
+
+async def test_get_pending_work_items_includes_elapsed_cooldown(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    async with db_conn.execute(
+        "UPDATE work_items SET next_retry_at='2000-01-01T00:00:00Z' WHERE id='wi-1'"
+    ) as _:
+        pass
+    await db_conn.commit()
+    rows = await store.get_pending_work_items("acc-alice", limit=10)
+    assert len(rows) == 1
+    assert rows[0]["id"] == "wi-1"
+
+
+async def test_claim_work_item_does_not_change_attempt_count(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    await store.claim_work_item("wi-1")
+    async with db_conn.execute(
+        "SELECT attempt_count FROM work_items WHERE id='wi-1'"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["attempt_count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # get_project_for_identity
 # ---------------------------------------------------------------------------
 
