@@ -81,7 +81,7 @@ After the runner task completes with `status == 'failed'`, the poller checks whe
 
 ```python
 if completed_item["status"] == "failed":
-    if completed_item["attempt_count"] < project_cfg.max_agent_attempts:
+    if completed_item["attempt_count"] + 1 < project_cfg.max_agent_attempts:
         next_retry_at = _iso_offset(60)  # now + 60s
         await self._store.retry_work_item(completed_item["id"], next_retry_at)
         await self._store.log_audit(
@@ -284,7 +284,7 @@ The `_show_status` function receives the `db_path` only. The five queries run se
 
 **`test_work_item_poller.py`:**
 - `test_failed_run_below_max_attempts_requeues` — runner returns `failed`, `attempt_count < max_agent_attempts`: item resets to `pending` with `next_retry_at` set
-- `test_failed_run_at_max_attempts_stays_failed` — runner returns `failed`, `attempt_count == max_agent_attempts`: item stays `failed`
+- `test_failed_run_at_max_attempts_stays_failed` — runner returns `failed`, `attempt_count + 1 == max_agent_attempts`: item stays `failed`
 
 **`test_config.py`:**
 - `test_max_agent_attempts_default_is_3` — `ProjectConfig(...)` without the field gives `max_agent_attempts=3`
