@@ -180,7 +180,8 @@ async def test_poller_cancels_runner_when_work_item_cancel_requested():
     store = MagicMock()
     project_row = _row(id="proj-1")
     cancel_work_item_row = _row(
-        id="wi-1", status="cancel_requested", summary="fix auth bug"
+        id="wi-1", status="cancel_requested", summary="fix auth bug",
+        attempt_count=0,
     )
 
     async def fake_get_work_item(id):
@@ -190,6 +191,7 @@ async def test_poller_cancels_runner_when_work_item_cancel_requested():
     store.get_pending_work_items = AsyncMock(return_value=[])
     store.get_work_item = AsyncMock(side_effect=fake_get_work_item)
     store.complete_work_item = AsyncMock()
+    store.log_audit = AsyncMock()
 
     config = make_config()
     mock_client = MagicMock()
@@ -230,13 +232,14 @@ async def test_kanban_work_item_claim_calls_update_board_card_with_configured_co
     project_row = _row(id="proj-1")
     kanban_item = _row(
         id="wi-1", source_type="kanban", source_id="card-1",
-        summary="Fix auth", payload_json="{}",
+        summary="Fix auth", payload_json="{}", attempt_count=0,
     )
     store = MagicMock()
     store.get_project_for_identity = AsyncMock(return_value=project_row)
     store.get_pending_work_items = AsyncMock(return_value=[kanban_item])
     store.claim_work_item = AsyncMock(return_value=True)
     store.get_work_item = AsyncMock(return_value=None)
+    store.log_audit = AsyncMock()
 
     broker = MagicMock()
     broker.get_session_id = AsyncMock(return_value="sess-1")
@@ -278,12 +281,13 @@ async def test_kanban_work_item_completion_calls_update_board_card_with_configur
     project_row = _row(id="proj-1")
     kanban_item = _row(
         id="wi-1", source_type="kanban", source_id="card-1",
-        summary="Fix auth", payload_json="{}", status="done",
+        summary="Fix auth", payload_json="{}", status="done", attempt_count=0,
     )
     store = MagicMock()
     store.get_project_for_identity = AsyncMock(return_value=project_row)
     store.get_pending_work_items = AsyncMock(return_value=[])
     store.get_work_item = AsyncMock(return_value=kanban_item)
+    store.log_audit = AsyncMock()
 
     broker = MagicMock()
     broker.get_session_id = AsyncMock(return_value="sess-1")
@@ -328,13 +332,14 @@ async def test_dm_work_item_claim_does_not_call_update_board_card():
     project_row = _row(id="proj-1")
     dm_item = _row(
         id="wi-2", source_type="dm", source_id="msg-1",
-        summary="Fix bug", payload_json="{}",
+        summary="Fix bug", payload_json="{}", attempt_count=0,
     )
     store = MagicMock()
     store.get_project_for_identity = AsyncMock(return_value=project_row)
     store.get_pending_work_items = AsyncMock(return_value=[dm_item])
     store.claim_work_item = AsyncMock(return_value=True)
     store.get_work_item = AsyncMock(return_value=None)
+    store.log_audit = AsyncMock()
 
     broker = MagicMock()
     broker.get_session_id = AsyncMock(return_value="sess-1")
@@ -366,13 +371,14 @@ async def test_update_board_card_error_on_claim_does_not_block_dispatch():
     project_row = _row(id="proj-1")
     kanban_item = _row(
         id="wi-1", source_type="kanban", source_id="card-1",
-        summary="Fix", payload_json="{}",
+        summary="Fix", payload_json="{}", attempt_count=0,
     )
     store = MagicMock()
     store.get_project_for_identity = AsyncMock(return_value=project_row)
     store.get_pending_work_items = AsyncMock(return_value=[kanban_item])
     store.claim_work_item = AsyncMock(return_value=True)
     store.get_work_item = AsyncMock(return_value=None)
+    store.log_audit = AsyncMock()
 
     broker = MagicMock()
     broker.get_session_id = AsyncMock(return_value="sess-1")
@@ -411,13 +417,14 @@ async def test_no_session_on_sync_logs_warning_and_dispatch_proceeds():
     project_row = _row(id="proj-1")
     kanban_item = _row(
         id="wi-1", source_type="kanban", source_id="card-1",
-        summary="Fix", payload_json="{}",
+        summary="Fix", payload_json="{}", attempt_count=0,
     )
     store = MagicMock()
     store.get_project_for_identity = AsyncMock(return_value=project_row)
     store.get_pending_work_items = AsyncMock(return_value=[kanban_item])
     store.claim_work_item = AsyncMock(return_value=True)
     store.get_work_item = AsyncMock(return_value=None)
+    store.log_audit = AsyncMock()
 
     broker = MagicMock()
     broker.get_session_id = AsyncMock(return_value=None)
