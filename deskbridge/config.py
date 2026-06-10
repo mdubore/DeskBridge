@@ -84,6 +84,7 @@ class ProjectConfig(BaseModel):
     check_in_prompt: str = (
         "Perform a project status check-in and report any blockers or progress."
     )
+    max_agent_attempts: int = Field(default=3, ge=1)
 
     @field_validator("adapter")
     @classmethod
