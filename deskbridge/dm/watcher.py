@@ -208,6 +208,16 @@ class DmWatcher:
                     )
                 else:
                     await self._store.resolve_approval(row["id"], "approved")
+                    try:
+                        await self._store.log_audit(
+                            id=str(uuid.uuid4()),
+                            event_type="approval_resolved",
+                            identity_id=self._account_id,
+                            work_item_id=row["work_item_id"],
+                            payload_json=json.dumps({"approval_id": row["id"], "resolution": "approved"}),
+                        )
+                    except Exception:
+                        log.warning("audit_log_failed", event_type="approval_resolved")
                     reply = "Approved."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
@@ -233,6 +243,16 @@ class DmWatcher:
                     )
                 else:
                     await self._store.resolve_approval(row["id"], "rejected")
+                    try:
+                        await self._store.log_audit(
+                            id=str(uuid.uuid4()),
+                            event_type="approval_resolved",
+                            identity_id=self._account_id,
+                            work_item_id=row["work_item_id"],
+                            payload_json=json.dumps({"approval_id": row["id"], "resolution": "rejected"}),
+                        )
+                    except Exception:
+                        log.warning("audit_log_failed", event_type="approval_resolved")
                     reply = "Rejected."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
@@ -301,6 +321,16 @@ class DmWatcher:
                 )
                 return "Failed to record decision — please check logs."
             await self._store.resolve_approval(row["id"], local_status)
+            try:
+                await self._store.log_audit(
+                    id=str(uuid.uuid4()),
+                    event_type="approval_resolved",
+                    identity_id=self._account_id,
+                    work_item_id=row["work_item_id"],
+                    payload_json=json.dumps({"approval_id": row["id"], "resolution": local_status}),
+                )
+            except Exception:
+                log.warning("audit_log_failed", event_type="approval_resolved")
             log.info(
                 "dm_watcher_approval_resolved",
                 identity=self._identity_label,
@@ -324,6 +354,16 @@ class DmWatcher:
                     )
                     return "Failed to record decision — please check logs."
                 await self._store.resolve_approval(row["id"], local_status)
+                try:
+                    await self._store.log_audit(
+                        id=str(uuid.uuid4()),
+                        event_type="approval_resolved",
+                        identity_id=self._account_id,
+                        work_item_id=row["work_item_id"],
+                        payload_json=json.dumps({"approval_id": row["id"], "resolution": local_status}),
+                    )
+                except Exception:
+                    log.warning("audit_log_failed", event_type="approval_resolved")
                 log.warning(
                     "dm_watcher_approval_already_resolved",
                     identity=self._identity_label,
@@ -332,6 +372,16 @@ class DmWatcher:
                 return "Decision received, but the approval was already resolved or has expired."
             elif cat == "approval_expired":
                 await self._store.resolve_approval(row["id"], "rejected")
+                try:
+                    await self._store.log_audit(
+                        id=str(uuid.uuid4()),
+                        event_type="approval_resolved",
+                        identity_id=self._account_id,
+                        work_item_id=row["work_item_id"],
+                        payload_json=json.dumps({"approval_id": row["id"], "resolution": "rejected"}),
+                    )
+                except Exception:
+                    log.warning("audit_log_failed", event_type="approval_resolved")
                 log.warning(
                     "dm_watcher_approval_expired",
                     identity=self._identity_label,
@@ -340,6 +390,16 @@ class DmWatcher:
                 return "Decision received, but the approval was already resolved or has expired."
             elif cat == "approval_not_found":
                 await self._store.resolve_approval(row["id"], "rejected")
+                try:
+                    await self._store.log_audit(
+                        id=str(uuid.uuid4()),
+                        event_type="approval_resolved",
+                        identity_id=self._account_id,
+                        work_item_id=row["work_item_id"],
+                        payload_json=json.dumps({"approval_id": row["id"], "resolution": "rejected"}),
+                    )
+                except Exception:
+                    log.warning("audit_log_failed", event_type="approval_resolved")
                 log.error(
                     "dm_watcher_approval_not_found",
                     identity=self._identity_label,

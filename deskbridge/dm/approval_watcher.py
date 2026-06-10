@@ -173,8 +173,9 @@ class ApprovalRequestWatcher:
 
         action_description = f"{tool_name}: {dm_display}"
 
+        local_approval_id = str(uuid.uuid4())
         await self._store.insert_approval(
-            id=str(uuid.uuid4()),
+            id=local_approval_id,
             mcp_approval_id=req_id,
             work_item_id=work_item_id,
             action_description=action_description,
@@ -183,6 +184,18 @@ class ApprovalRequestWatcher:
             expires_at=expires_at_iso,
             identity_id=self._account_id,
         )
+        try:
+            await self._store.log_audit(
+                id=str(uuid.uuid4()),
+                event_type="approval_requested",
+                identity_id=self._account_id,
+                payload_json=json.dumps({
+                    "approval_id": local_approval_id,
+                    "mcp_approval_id": req_id,
+                }),
+            )
+        except Exception:
+            log.warning("audit_log_failed", event_type="approval_requested", req_id=req_id)
 
         if self._operator_npub:
             message = (
