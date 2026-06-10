@@ -91,6 +91,22 @@ class AgentRunner:
         prompt = _APPROVAL_INSTRUCTION + task_text[:4000 - len(_APPROVAL_INSTRUCTION)]
         cmd = build_command(project.adapter, project.repo_path, prompt, agent_id=project.openclaw_agent_id)
 
+        # 2b. Log agent_run_started audit event
+        try:
+            await self._store.log_audit(
+                id=str(uuid4()),
+                event_type="agent_run_started",
+                identity_id=f"acc-{project.identity}",
+                project_id=project.id,
+                work_item_id=work_item["id"],
+                payload_json=json.dumps({
+                    "run_id": run_id,
+                    "adapter": project.adapter,
+                }),
+            )
+        except Exception:
+            log.warning("audit_log_failed", event_type="agent_run_started", run_id=run_id)
+
         # 3. Spawn subprocess
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -141,6 +157,23 @@ class AgentRunner:
         # 6. Record final run result
         result_text = "\n".join(output_buf)[-2000:]
         await self._store.update_agent_run(run_id, status=final_status, result_summary=result_text)
+
+        # 6b. Log agent_run_finished audit event
+        try:
+            await self._store.log_audit(
+                id=str(uuid4()),
+                event_type="agent_run_finished",
+                identity_id=f"acc-{project.identity}",
+                project_id=project.id,
+                work_item_id=work_item["id"],
+                payload_json=json.dumps({
+                    "run_id": run_id,
+                    "status": final_status,
+                    "returncode": proc.returncode,
+                }),
+            )
+        except Exception:
+            log.warning("audit_log_failed", event_type="agent_run_finished", run_id=run_id)
 
         # 7. Update work item
         await self._store.complete_work_item(work_item["id"], status=final_status)

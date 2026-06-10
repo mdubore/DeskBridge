@@ -27,6 +27,7 @@ def make_store():
     store.update_agent_run = AsyncMock()
     store.complete_work_item = AsyncMock()
     store.insert_outbox_item = AsyncMock()
+    store.log_audit = AsyncMock()
     return store
 
 
