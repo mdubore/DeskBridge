@@ -40,6 +40,7 @@ class Store:
         adapter: str,
         openclaw_agent_id: str | None,
         boards_json: str,
+        groups_json: str,
         allowed_actions_json: str,
         escalation_dm_target: str | None,
     ) -> None:
@@ -47,8 +48,8 @@ class Store:
             """
             INSERT INTO projects
                 (id, name, repo_path, identity_id, adapter, openclaw_agent_id,
-                 boards_json, allowed_actions_json, escalation_dm_target)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 boards_json, groups_json, allowed_actions_json, escalation_dm_target)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name                 = excluded.name,
                 repo_path            = excluded.repo_path,
@@ -56,12 +57,12 @@ class Store:
                 adapter              = excluded.adapter,
                 openclaw_agent_id    = excluded.openclaw_agent_id,
                 boards_json          = excluded.boards_json,
+                groups_json          = excluded.groups_json,
                 allowed_actions_json = excluded.allowed_actions_json,
                 escalation_dm_target = excluded.escalation_dm_target
-                -- groups_json excluded: populated by relay sync, must survive restarts
             """,
             (id, name, repo_path, identity_id, adapter, openclaw_agent_id,
-             boards_json, allowed_actions_json, escalation_dm_target),
+             boards_json, groups_json, allowed_actions_json, escalation_dm_target),
         ):
             pass
         await self._conn.commit()
@@ -467,6 +468,7 @@ async def bootstrap_accounts_from_config(store: Store, config: DeskBridgeConfig)
             adapter=project.adapter,
             openclaw_agent_id=project.openclaw_agent_id,
             boards_json=json.dumps(project.boards),
+            groups_json=json.dumps(project.groups),
             allowed_actions_json=json.dumps(project.allowed_autonomous_actions),
             escalation_dm_target=project.escalation_dm_target,
         )

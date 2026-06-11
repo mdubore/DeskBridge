@@ -791,7 +791,7 @@ async def test_bootstrap_inserts_project_row(tmp_path):
     assert row["name"] == "MyProj"
 
 
-async def test_bootstrap_project_upsert_preserves_groups_json(tmp_path):
+async def test_bootstrap_project_groups_config_is_authoritative(tmp_path):
     config = DeskBridgeConfig(
         supervisor=SupervisorConfig(db_path=str(tmp_path / "test.db")),
         mcp=McpConfig(command="nostrdesk-mcp"),
@@ -799,6 +799,7 @@ async def test_bootstrap_project_upsert_preserves_groups_json(tmp_path):
         projects=[ProjectConfig(
             id="proj-1", name="MyProj", repo_path="/repo",
             identity="alice", escalation_dm_target="npub1op",
+            groups=["grp-1"],
         )],
     )
     db_path = tmp_path / "test.db"
@@ -806,18 +807,20 @@ async def test_bootstrap_project_upsert_preserves_groups_json(tmp_path):
         conn.row_factory = aiosqlite.Row
         await apply_schema(conn)
         store = Store(conn)
-        # First bootstrap creates the row
-        await bootstrap_accounts_from_config(store=store, config=config)
-        # Manually set groups_json (simulates relay sync populating it)
-        await conn.execute(
-            "UPDATE projects SET groups_json = ? WHERE id = ?",
-            ('["grp-1"]', "proj-1"),
-        )
-        await conn.commit()
-        # Second bootstrap (restart) must NOT overwrite groups_json
         await bootstrap_accounts_from_config(store=store, config=config)
         row = await store.get_project_for_identity("acc-alice")
-    assert json.loads(row["groups_json"]) == ["grp-1"], "restart must not clear relay-populated groups"
+        assert json.loads(row["groups_json"]) == ["grp-1"]
+        # Manual/stale db edits are overwritten on restart — config wins
+        await conn.execute(
+            "UPDATE projects SET groups_json = ? WHERE id = ?",
+            ('["grp-stale"]', "proj-1"),
+        )
+        await conn.commit()
+        await bootstrap_accounts_from_config(store=store, config=config)
+        row = await store.get_project_for_identity("acc-alice")
+    assert json.loads(row["groups_json"]) == ["grp-1"], (
+        "config groups must overwrite stale db state on restart"
+    )
 
 
 async def test_bootstrap_project_identity_reassignment(tmp_path):
@@ -867,6 +870,7 @@ async def test_upsert_project_writes_adapter(store: Store):
         adapter="codex",
         openclaw_agent_id=None,
         boards_json="[]",
+        groups_json="[]",
         allowed_actions_json="[]",
         escalation_dm_target=None,
     )
@@ -887,12 +891,32 @@ async def test_upsert_project_writes_openclaw_agent_id(store: Store):
         adapter="openclaw",
         openclaw_agent_id="my-agent",
         boards_json="[]",
+        groups_json="[]",
         allowed_actions_json="[]",
         escalation_dm_target=None,
     )
     row = await store.get_project_for_identity("acc-alice")
     assert row is not None
     assert row["openclaw_agent_id"] == "my-agent"
+
+
+async def test_upsert_project_writes_groups_json(store: Store, db_conn):
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:A"
+    )
+    await store.upsert_project(
+        id="proj-1",
+        name="MyProject",
+        repo_path="/repo",
+        identity_id="acc-alice",
+        adapter="claude-code",
+        openclaw_agent_id=None,
+        boards_json="[]",
+        groups_json='["grp-1", "grp-2"]',
+        allowed_actions_json="[]",
+        escalation_dm_target=None,
+    )
+    assert await store.get_project_groups("acc-alice") == ["grp-1", "grp-2"]
 
 
 async def test_apply_schema_adds_adapter_column(tmp_path):
