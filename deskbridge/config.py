@@ -78,6 +78,7 @@ class ProjectConfig(BaseModel):
         default_factory=lambda: ["read", "send_dm", "update_task_status"]
     )
     boards: list[str] = Field(default_factory=list)
+    groups: list[str] = Field(default_factory=list)
     kanban_column_in_progress: str = "in_progress"
     kanban_column_done: str = "done"
     check_in_interval_hours: Annotated[float, Field(gt=0)] | None = None

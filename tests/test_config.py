@@ -292,3 +292,21 @@ def test_max_agent_attempts_custom_value_accepted(tmp_path):
     cfg_file.write_text(custom)
     config = load_config(cfg_file)
     assert config.projects[0].max_agent_attempts == 5
+
+
+def test_project_groups_default_empty(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(MINIMAL_CONFIG)
+    config = load_config(cfg_file)
+    assert config.projects[0].groups == []
+
+
+def test_project_groups_parsed_from_toml(tmp_path):
+    custom = MINIMAL_CONFIG.replace(
+        'escalation_dm_target = "npub1human"',
+        'escalation_dm_target = "npub1human"\ngroups = ["grp-1", "grp-2"]',
+    )
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(custom)
+    config = load_config(cfg_file)
+    assert config.projects[0].groups == ["grp-1", "grp-2"]
