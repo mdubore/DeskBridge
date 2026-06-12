@@ -53,6 +53,9 @@ class ApprovalDecisionPoller:
             mcp_approval_id = row["mcp_approval_id"]
 
             if mcp_approval_id:
+                # Session is looked up per row (not per cycle): local-only rows
+                # need no session, and MCP-correlated rows need one at the
+                # moment of forwarding.
                 session_id = await self._broker.get_session_id(self._identity_label)
                 if session_id is None:
                     log.debug(

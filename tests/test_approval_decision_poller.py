@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 from deskbridge.dm.approval_decision_poller import ApprovalDecisionPoller
@@ -49,6 +50,8 @@ async def test_local_approve_request_resolves_approved(store, db_conn):
     client.call_tool.assert_not_awaited()
     audits = await store.get_audit_events("approval_resolved")
     assert len(audits) == 1
+    payload = json.loads(audits[0]["payload_json"])
+    assert payload.get("via") == "cli"
 
 
 async def test_local_reject_request_resolves_rejected(store, db_conn):
