@@ -143,10 +143,13 @@ async def _show_status(db_path: Path) -> None:
 
         # Approvals
         async with conn.execute(
-            "SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending'"
+            "SELECT status, COUNT(*) AS n FROM approvals GROUP BY status"
         ) as cursor:
-            row = await cursor.fetchone()
-        click.echo(f"\nApprovals\n  pending={row['n'] if row else 0}")
+            approval_counts = {r["status"]: r["n"] for r in await cursor.fetchall()}
+        click.echo(
+            f"\nApprovals\n  pending={approval_counts.get('pending', 0)}"
+            f"  queued={approval_counts.get('approve_requested', 0) + approval_counts.get('reject_requested', 0)}"
+        )
         async with conn.execute(
             """
             SELECT id, status, action_description FROM approvals

@@ -139,12 +139,17 @@ async def test_status_lists_active_ids(config_file, tmp_path):
         "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'pending', 'k1', 'fix the bug')",
         "INSERT INTO approvals (id, identity_id, action_description, status) "
         "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'pending')",
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-2', 'acc-alice', 'send payment', 'approve_requested')",
     )
     runner = CliRunner()
     result = runner.invoke(cli, ["status", "--config", str(config_file)])
     assert result.exit_code == 0
     assert "wi-1" in result.output
     assert "appr-1" in result.output
+    assert "appr-2" in result.output
+    assert "pending=1" in result.output
+    assert "queued=1" in result.output
 
 
 async def test_cancel_pending_work_item_sets_cancelled(config_file, tmp_path):
