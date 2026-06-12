@@ -13,6 +13,7 @@ from deskbridge.db.store import Store, bootstrap_accounts_from_config
 from deskbridge.dm.watcher import DmWatcher
 from deskbridge.dm.group_watcher import GroupWatcher
 from deskbridge.dm.approval_watcher import ApprovalRequestWatcher
+from deskbridge.dm.approval_decision_poller import ApprovalDecisionPoller
 from deskbridge.dm.kanban_watcher import KanbanWatcher
 from deskbridge.dm.outbox import OutboxDrainer
 from deskbridge.agent.poller import WorkItemPoller
@@ -64,6 +65,7 @@ class Supervisor:
                 watcher_tasks: list[asyncio.Task] = []
                 group_watcher_tasks: list[asyncio.Task] = []
                 approval_watcher_tasks: list[asyncio.Task] = []
+                approval_decision_poller_tasks: list[asyncio.Task] = []
                 drainer_task: asyncio.Task | None = None
                 poller_tasks: list[asyncio.Task] = []
                 kanban_watcher_tasks: list[asyncio.Task] = []
@@ -98,6 +100,19 @@ class Supervisor:
                                 shutdown_event=self._shutdown_event,
                             ).run(),
                             name=f"approval_watcher_{identity.label}",
+                        )
+                        for identity in self._config.identities
+                    ]
+                    approval_decision_poller_tasks = [
+                        asyncio.create_task(
+                            ApprovalDecisionPoller(
+                                identity_label=identity.label,
+                                store=store,
+                                client=client,
+                                broker=broker,
+                                shutdown_event=self._shutdown_event,
+                            ).run(),
+                            name=f"approval_decision_poller_{identity.label}",
                         )
                         for identity in self._config.identities
                     ]
@@ -212,6 +227,7 @@ class Supervisor:
                         watcher_tasks
                         + group_watcher_tasks
                         + approval_watcher_tasks
+                        + approval_decision_poller_tasks
                         + poller_tasks
                         + kanban_watcher_tasks
                         + checkin_watcher_tasks
