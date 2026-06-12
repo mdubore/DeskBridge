@@ -28,3 +28,6 @@ agents = ["codex", "claude-code"]
 # npub of the human to DM with progress/approvals
 escalation_dm_target = "npub1examplehuman000000000000000000000000000000000000000000000000"
 allowed_autonomous_actions = ["read", "send_dm", "update_task_status"]
+# NIP-29 group ids this identity should watch for @mentions (optional).
+# Config is authoritative: groups removed here stop being watched on restart.
+groups = []
