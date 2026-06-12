@@ -1,15 +1,75 @@
 import asyncio
 import concurrent.futures
+import json
 from pathlib import Path
+from uuid import uuid4
 
 import click
 import aiosqlite
+import structlog
 
-from deskbridge.config import load_config, ConfigError
+from deskbridge.config import load_config, ConfigError, DeskBridgeConfig
+from deskbridge.db.schema import apply_schema
+from deskbridge.db.store import Store
 from deskbridge.supervisor import Supervisor
 
+log = structlog.get_logger()
 
 DEFAULT_CONFIG = Path.home() / ".deskbridge" / "config.toml"
+
+_CONFIG_OPTION = click.option(
+    "--config",
+    "config_path",
+    type=click.Path(),
+    default=str(DEFAULT_CONFIG),
+    show_default=True,
+    help="Path to config TOML file",
+)
+
+
+def _load_config_or_exit(config_path: str) -> DeskBridgeConfig:
+    try:
+        return load_config(Path(config_path))
+    except ConfigError as e:
+        click.echo(f"Config error: {e}", err=True)
+        raise SystemExit(1)
+
+
+def _require_db(config_path: str) -> Path:
+    config = _load_config_or_exit(config_path)
+    db_path = Path(config.supervisor.db_path).expanduser()
+    if not db_path.exists():
+        click.echo("No database found — DeskBridge has not been started yet.", err=True)
+        raise SystemExit(1)
+    return db_path
+
+
+def _run_async(coro):
+    # Run in a dedicated thread so asyncio.run() always gets a fresh event loop.
+    # This avoids RuntimeError when the command is invoked from within an already-
+    # running loop (e.g. during tests).
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+async def _log_audit_safe(
+    store: Store,
+    event_type: str,
+    *,
+    identity_id: str | None = None,
+    work_item_id: str | None = None,
+    payload: dict,
+) -> None:
+    try:
+        await store.log_audit(
+            id=str(uuid4()),
+            event_type=event_type,
+            identity_id=identity_id,
+            work_item_id=work_item_id,
+            payload_json=json.dumps(payload),
+        )
+    except Exception:
+        log.warning("audit_log_failed", event_type=event_type)
 
 
 @click.group()
@@ -18,21 +78,10 @@ def cli():
 
 
 @cli.command()
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(),
-    default=str(DEFAULT_CONFIG),
-    show_default=True,
-    help="Path to config TOML file",
-)
+@_CONFIG_OPTION
 def start(config_path: str):
     """Start the DeskBridge supervisor daemon (foreground)."""
-    try:
-        config = load_config(Path(config_path))
-    except ConfigError as e:
-        click.echo(f"Config error: {e}", err=True)
-        raise SystemExit(1)
+    config = _load_config_or_exit(config_path)
 
     click.echo(f"Starting DeskBridge (config: {config_path})")
 
@@ -123,30 +172,105 @@ async def _show_status(db_path: Path) -> None:
 
 
 @cli.command()
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(),
-    default=str(DEFAULT_CONFIG),
-    show_default=True,
-    help="Path to config TOML file",
-)
+@_CONFIG_OPTION
 def status(config_path: str):
     """Show current session health from the local SQLite database."""
-    try:
-        config = load_config(Path(config_path))
-    except ConfigError as e:
-        click.echo(f"Config error: {e}", err=True)
-        raise SystemExit(1)
+    config = _load_config_or_exit(config_path)
 
     db_path = Path(config.supervisor.db_path).expanduser()
     if not db_path.exists():
         click.echo("No database found — DeskBridge has not been started yet.")
         return
 
-    # Run in a dedicated thread so asyncio.run() always gets a fresh event loop.
-    # This avoids RuntimeError when the command is invoked from within an already-
-    # running loop (e.g. during tests).
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(asyncio.run, _show_status(db_path))
-        future.result()
+    _run_async(_show_status(db_path))
+
+
+async def _cancel_work_item(db_path: Path, work_item_id: str) -> tuple[bool, str]:
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        store = Store(conn)
+        row = await store.get_work_item(work_item_id)
+        if row is None:
+            return False, f"Work item {work_item_id} not found."
+        status = row["status"]
+        if status == "pending":
+            if not await store.cancel_pending_work_item(work_item_id):
+                return False, (
+                    f"Work item {work_item_id} is no longer pending — "
+                    "run 'deskbridge status' and try again."
+                )
+            await _log_audit_safe(
+                store, "work_item_terminal",
+                identity_id=row["identity_id"], work_item_id=work_item_id,
+                payload={"status": "cancelled", "via": "cli"},
+            )
+            return True, f"Work item {work_item_id} cancelled."
+        if status == "dispatched":
+            if not await store.mark_work_item_cancel_requested(work_item_id):
+                return False, (
+                    f"Work item {work_item_id} is no longer running — "
+                    "run 'deskbridge status' and try again."
+                )
+            await _log_audit_safe(
+                store, "work_item_cancel_requested",
+                identity_id=row["identity_id"], work_item_id=work_item_id,
+                payload={"via": "cli"},
+            )
+            return True, (
+                f"Cancel requested for running work item {work_item_id} — "
+                "the supervisor will stop the agent shortly."
+            )
+        if status == "cancel_requested":
+            return False, f"Work item {work_item_id} already has a pending cancel request."
+        return False, f"Work item {work_item_id} is {status} — nothing to cancel."
+
+
+async def _retry_work_item(db_path: Path, work_item_id: str) -> tuple[bool, str]:
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        store = Store(conn)
+        row = await store.get_work_item(work_item_id)
+        if row is None:
+            return False, f"Work item {work_item_id} not found."
+        if row["status"] not in ("failed", "cancelled", "interrupted"):
+            return False, (
+                f"Work item {work_item_id} is {row['status']} — only failed, "
+                "cancelled, or interrupted items can be retried."
+            )
+        if not await store.reset_work_item_for_retry(work_item_id):
+            return False, (
+                f"Work item {work_item_id} changed state — "
+                "run 'deskbridge status' and try again."
+            )
+        await _log_audit_safe(
+            store, "work_item_retry_queued",
+            identity_id=row["identity_id"], work_item_id=work_item_id,
+            payload={"via": "cli", "attempt_count": 0},
+        )
+        return True, f"Work item {work_item_id} re-queued (attempt counter reset)."
+
+
+@cli.command()
+@click.argument("work_item_id")
+@_CONFIG_OPTION
+def cancel(work_item_id: str, config_path: str):
+    """Cancel a pending or running work item."""
+    db_path = _require_db(config_path)
+    ok, message = _run_async(_cancel_work_item(db_path, work_item_id))
+    click.echo(message)
+    if not ok:
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("work_item_id")
+@_CONFIG_OPTION
+def retry(work_item_id: str, config_path: str):
+    """Re-queue a failed, cancelled, or interrupted work item (resets attempt count)."""
+    db_path = _require_db(config_path)
+    ok, message = _run_async(_retry_work_item(db_path, work_item_id))
+    click.echo(message)
+    if not ok:
+        raise SystemExit(1)

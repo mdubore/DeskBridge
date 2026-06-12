@@ -6,6 +6,26 @@ from deskbridge.cli import cli
 from deskbridge.db.schema import apply_schema
 
 
+async def _seed(db_path, *sql_statements):
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        await conn.execute(
+            "INSERT INTO accounts (id, npub, label, passphrase_ref) "
+            "VALUES ('acc-alice', 'npub1alice', 'alice', 'env:X')"
+        )
+        for stmt in sql_statements:
+            await conn.execute(stmt)
+        await conn.commit()
+
+
+async def _fetch_one(db_path, sql):
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(sql) as cur:
+            return await cur.fetchone()
+
+
 @pytest.fixture
 def config_file(tmp_path, monkeypatch):
     monkeypatch.setenv("ALICE", "passphrase")
@@ -109,3 +129,110 @@ async def test_status_shows_all_sections(config_file, tmp_path):
     assert "alice" in result.output
     assert "claude-code" in result.output
     assert "done" in result.output
+
+
+async def test_cancel_pending_work_item_sets_cancelled(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key, summary) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'pending', 'k1', 'fix the bug')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["cancel", "wi-1", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "cancelled" in result.output.lower()
+    row = await _fetch_one(db_path, "SELECT status FROM work_items WHERE id='wi-1'")
+    assert row["status"] == "cancelled"
+    audit = await _fetch_one(
+        db_path, "SELECT id FROM audit_log WHERE event_type='work_item_terminal'"
+    )
+    assert audit is not None
+
+
+async def test_cancel_dispatched_work_item_requests_cancel(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key, summary) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'dispatched', 'k1', 'fix the bug')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["cancel", "wi-1", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "cancel requested" in result.output.lower()
+    row = await _fetch_one(db_path, "SELECT status FROM work_items WHERE id='wi-1'")
+    assert row["status"] == "cancel_requested"
+    audit = await _fetch_one(
+        db_path, "SELECT id FROM audit_log WHERE event_type='work_item_cancel_requested'"
+    )
+    assert audit is not None
+
+
+async def test_cancel_done_work_item_fails(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key, summary) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'done', 'k1', 'fix the bug')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["cancel", "wi-1", "--config", str(config_file)])
+    assert result.exit_code == 1
+    row = await _fetch_one(db_path, "SELECT status FROM work_items WHERE id='wi-1'")
+    assert row["status"] == "done"
+
+
+async def test_cancel_missing_work_item_fails(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(db_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["cancel", "wi-missing", "--config", str(config_file)])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
+
+
+async def test_retry_failed_work_item_requeues(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key, summary, attempt_count, next_retry_at) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'failed', 'k1', 'fix the bug', 2, '2099-01-01T00:00:00Z')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["retry", "wi-1", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "re-queued" in result.output.lower()
+    row = await _fetch_one(
+        db_path, "SELECT status, attempt_count, next_retry_at FROM work_items WHERE id='wi-1'"
+    )
+    assert row["status"] == "pending"
+    assert row["attempt_count"] == 0
+    assert row["next_retry_at"] is None
+    audit = await _fetch_one(
+        db_path, "SELECT id FROM audit_log WHERE event_type='work_item_retry_queued'"
+    )
+    assert audit is not None
+
+
+async def test_retry_pending_work_item_fails(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key, summary) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'pending', 'k1', 'fix the bug')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["retry", "wi-1", "--config", str(config_file)])
+    assert result.exit_code == 1
+    row = await _fetch_one(db_path, "SELECT status FROM work_items WHERE id='wi-1'")
+    assert row["status"] == "pending"
+
+
+async def test_retry_missing_work_item_fails(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(db_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["retry", "wi-missing", "--config", str(config_file)])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
