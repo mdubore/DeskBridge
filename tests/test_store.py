@@ -900,7 +900,7 @@ async def test_upsert_project_writes_openclaw_agent_id(store: Store):
     assert row["openclaw_agent_id"] == "my-agent"
 
 
-async def test_upsert_project_writes_groups_json(store: Store, db_conn):
+async def test_upsert_project_writes_groups_json(store: Store):
     await store.upsert_account(
         id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:A"
     )
