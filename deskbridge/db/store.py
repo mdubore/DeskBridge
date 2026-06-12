@@ -471,6 +471,34 @@ class Store:
             pass
         await self._conn.commit()
 
+    async def request_approval_decision(self, id: str, decision: str) -> bool:
+        if decision not in ("approve_requested", "reject_requested"):
+            raise ValueError(f"invalid approval decision {decision!r}")
+        async with self._conn.execute(
+            """
+            UPDATE approvals
+            SET status = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (decision, id),
+        ) as cur:
+            updated = cur.rowcount > 0
+        await self._conn.commit()
+        return updated
+
+    async def get_requested_approval_decisions(self, identity_id: str) -> list[aiosqlite.Row]:
+        async with self._conn.execute(
+            """
+            SELECT a.* FROM approvals a
+            LEFT JOIN work_items w ON a.work_item_id = w.id
+            WHERE a.status IN ('approve_requested', 'reject_requested')
+              AND (w.identity_id = ? OR (a.work_item_id IS NULL AND a.identity_id = ?))
+            ORDER BY a.created_at, a.rowid
+            """,
+            (identity_id, identity_id),
+        ) as cur:
+            return await cur.fetchall()
+
     async def get_project_groups(self, identity_id: str) -> list[str]:
         async with self._conn.execute(
             "SELECT groups_json FROM projects WHERE identity_id = ? LIMIT 1",

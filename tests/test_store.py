@@ -733,6 +733,66 @@ async def test_resolve_approval_rejected(store: Store, db_conn):
     assert row["status"] == "rejected"
 
 
+# request_approval_decision / get_requested_approval_decisions
+# ---------------------------------------------------------------------------
+
+async def test_request_approval_decision_from_pending(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'pending')"
+    )
+    await db_conn.commit()
+    assert await store.request_approval_decision("appr-1", "approve_requested") is True
+    row = await store.get_approval("appr-1")
+    assert row["status"] == "approve_requested"
+
+
+async def test_request_approval_decision_refuses_resolved(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await db_conn.execute(
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'approved')"
+    )
+    await db_conn.commit()
+    assert await store.request_approval_decision("appr-1", "reject_requested") is False
+    row = await store.get_approval("appr-1")
+    assert row["status"] == "approved"
+
+
+async def test_request_approval_decision_rejects_unknown_decision(store: Store):
+    with pytest.raises(ValueError):
+        await store.request_approval_decision("appr-1", "approved")
+
+
+async def test_get_requested_approval_decisions_scopes_by_identity(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await store.upsert_account(id="acc-bob", npub="npub1bob", label="bob", passphrase_ref="env:Y")
+    await db_conn.execute(
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'a', 'approve_requested')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-2', 'acc-bob', 'b', 'reject_requested')"
+    )
+    await db_conn.commit()
+    rows = await store.get_requested_approval_decisions("acc-alice")
+    assert [r["id"] for r in rows] == ["appr-1"]
+
+
+async def test_get_requested_approval_decisions_via_work_item_identity(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item_phase4(db_conn, id="wi-1", identity_id="acc-alice")
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status) "
+        "VALUES ('appr-1', 'wi-1', 'a', 'approve_requested')"
+    )
+    await db_conn.commit()
+    rows = await store.get_requested_approval_decisions("acc-alice")
+    assert [r["id"] for r in rows] == ["appr-1"]
+
+
 # get_project_groups
 # ---------------------------------------------------------------------------
 
