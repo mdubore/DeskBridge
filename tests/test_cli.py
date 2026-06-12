@@ -236,3 +236,59 @@ async def test_retry_missing_work_item_fails(config_file, tmp_path):
     result = runner.invoke(cli, ["retry", "wi-missing", "--config", str(config_file)])
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
+
+
+async def test_approve_pending_approval_queues_decision(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'pending')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["approve", "appr-1", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "queued" in result.output.lower()
+    row = await _fetch_one(db_path, "SELECT status FROM approvals WHERE id='appr-1'")
+    assert row["status"] == "approve_requested"
+    audit = await _fetch_one(
+        db_path, "SELECT id FROM audit_log WHERE event_type='approval_decision_requested'"
+    )
+    assert audit is not None
+
+
+async def test_reject_pending_approval_queues_decision(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'pending')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["reject", "appr-1", "--config", str(config_file)])
+    assert result.exit_code == 0
+    row = await _fetch_one(db_path, "SELECT status FROM approvals WHERE id='appr-1'")
+    assert row["status"] == "reject_requested"
+
+
+async def test_approve_already_resolved_fails(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'approved')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["approve", "appr-1", "--config", str(config_file)])
+    assert result.exit_code == 1
+    row = await _fetch_one(db_path, "SELECT status FROM approvals WHERE id='appr-1'")
+    assert row["status"] == "approved"
+
+
+async def test_approve_missing_approval_fails(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(db_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["approve", "appr-missing", "--config", str(config_file)])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()

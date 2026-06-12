@@ -274,3 +274,64 @@ def retry(work_item_id: str, config_path: str):
     click.echo(message, err=not ok)
     if not ok:
         raise SystemExit(1)
+
+
+async def _request_approval_decision(
+    db_path: Path, approval_id: str, approved: bool
+) -> tuple[bool, str]:
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await apply_schema(conn)
+        store = Store(conn)
+        row = await store.get_approval(approval_id)
+        if row is None:
+            return False, f"Approval {approval_id} not found."
+        if row["status"] != "pending":
+            return False, (
+                f"Approval {approval_id} is {row['status']} — "
+                "only pending approvals can be decided."
+            )
+        decision = "approve_requested" if approved else "reject_requested"
+        if not await store.request_approval_decision(approval_id, decision):
+            return False, (
+                f"Approval {approval_id} changed state — "
+                "run 'deskbridge status' and try again."
+            )
+        await _log_audit_safe(
+            store, "approval_decision_requested",
+            identity_id=row["identity_id"], work_item_id=row["work_item_id"],
+            payload={
+                "approval_id": approval_id,
+                "decision": "approved" if approved else "rejected",
+                "via": "cli",
+            },
+        )
+        verb = "Approval" if approved else "Rejection"
+        return True, (
+            f"{verb} queued for {approval_id} — "
+            "the supervisor will forward the decision to MCP."
+        )
+
+
+@cli.command()
+@click.argument("approval_id")
+@_CONFIG_OPTION
+def approve(approval_id: str, config_path: str):
+    """Approve a pending approval request (the supervisor forwards it to MCP)."""
+    db_path = _require_db(config_path)
+    ok, message = _run_async(_request_approval_decision(db_path, approval_id, approved=True))
+    click.echo(message, err=not ok)
+    if not ok:
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("approval_id")
+@_CONFIG_OPTION
+def reject(approval_id: str, config_path: str):
+    """Reject a pending approval request (the supervisor forwards it to MCP)."""
+    db_path = _require_db(config_path)
+    ok, message = _run_async(_request_approval_decision(db_path, approval_id, approved=False))
+    click.echo(message, err=not ok)
+    if not ok:
+        raise SystemExit(1)
