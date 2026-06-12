@@ -126,6 +126,20 @@ async def _show_status(db_path: Path) -> None:
             f"  failed={counts.get('failed', 0)}"
             f"  cancelled={counts.get('cancelled', 0)}"
         )
+        async with conn.execute(
+            """
+            SELECT id, status, attempt_count, summary FROM work_items
+            WHERE status IN ('pending', 'dispatched', 'cancel_requested')
+            ORDER BY created_at LIMIT 10
+            """
+        ) as cursor:
+            active_items = await cursor.fetchall()
+        for item in active_items:
+            summary = (item["summary"] or "")[:40]
+            click.echo(
+                f"  {item['id']}  {item['status']:<17}"
+                f" attempts={item['attempt_count']}  \"{summary}\""
+            )
 
         # Approvals
         async with conn.execute(
@@ -133,6 +147,17 @@ async def _show_status(db_path: Path) -> None:
         ) as cursor:
             row = await cursor.fetchone()
         click.echo(f"\nApprovals\n  pending={row['n'] if row else 0}")
+        async with conn.execute(
+            """
+            SELECT id, status, action_description FROM approvals
+            WHERE status IN ('pending', 'approve_requested', 'reject_requested')
+            ORDER BY created_at LIMIT 10
+            """
+        ) as cursor:
+            open_approvals = await cursor.fetchall()
+        for appr in open_approvals:
+            action = (appr["action_description"] or "")[:50]
+            click.echo(f"  {appr['id']}  {appr['status']:<17} \"{action}\"")
 
         # Recent Runs
         async with conn.execute(

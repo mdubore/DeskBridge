@@ -131,6 +131,22 @@ async def test_status_shows_all_sections(config_file, tmp_path):
     assert "done" in result.output
 
 
+async def test_status_lists_active_ids(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, idempotency_key, summary) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'pending', 'k1', 'fix the bug')",
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'pending')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["status", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "wi-1" in result.output
+    assert "appr-1" in result.output
+
+
 async def test_cancel_pending_work_item_sets_cancelled(config_file, tmp_path):
     db_path = tmp_path / "test.db"
     await _seed(
