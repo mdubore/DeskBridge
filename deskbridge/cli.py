@@ -259,7 +259,7 @@ def cancel(work_item_id: str, config_path: str):
     """Cancel a pending or running work item."""
     db_path = _require_db(config_path)
     ok, message = _run_async(_cancel_work_item(db_path, work_item_id))
-    click.echo(message)
+    click.echo(message, err=not ok)
     if not ok:
         raise SystemExit(1)
 
@@ -271,6 +271,6 @@ def retry(work_item_id: str, config_path: str):
     """Re-queue a failed, cancelled, or interrupted work item (resets attempt count)."""
     db_path = _require_db(config_path)
     ok, message = _run_async(_retry_work_item(db_path, work_item_id))
-    click.echo(message)
+    click.echo(message, err=not ok)
     if not ok:
         raise SystemExit(1)
