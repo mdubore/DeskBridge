@@ -625,6 +625,65 @@ async def test_mark_work_item_cancel_requested_updates_status(store: Store, db_c
     assert row["status"] == "cancel_requested"
 
 
+async def test_mark_work_item_cancel_requested_returns_true_from_dispatched(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, status="dispatched")
+    assert await store.mark_work_item_cancel_requested("wi-1") is True
+
+
+async def test_mark_work_item_cancel_requested_refuses_pending(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    assert await store.mark_work_item_cancel_requested("wi-1") is False
+    row = await store.get_work_item("wi-1")
+    assert row["status"] == "pending"
+
+
+async def test_cancel_pending_work_item_sets_cancelled(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store)
+    assert await store.cancel_pending_work_item("wi-1") is True
+    row = await store.get_work_item("wi-1")
+    assert row["status"] == "cancelled"
+
+
+async def test_cancel_pending_work_item_refuses_dispatched(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, status="dispatched")
+    assert await store.cancel_pending_work_item("wi-1") is False
+    row = await store.get_work_item("wi-1")
+    assert row["status"] == "dispatched"
+
+
+async def test_reset_work_item_for_retry_resets_all_fields(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, status="failed")
+    async with db_conn.execute(
+        "UPDATE work_items SET attempt_count = 2, next_retry_at = '2099-01-01T00:00:00Z' WHERE id = 'wi-1'"
+    ):
+        pass
+    await db_conn.commit()
+    assert await store.reset_work_item_for_retry("wi-1") is True
+    row = await store.get_work_item("wi-1")
+    assert row["status"] == "pending"
+    assert row["attempt_count"] == 0
+    assert row["next_retry_at"] is None
+
+
+async def test_reset_work_item_for_retry_refuses_dispatched(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, status="dispatched")
+    assert await store.reset_work_item_for_retry("wi-1") is False
+
+
+async def test_reset_work_item_for_retry_allows_interrupted(store: Store, db_conn):
+    await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
+    await _seed_work_item(store, status="interrupted")
+    assert await store.reset_work_item_for_retry("wi-1") is True
+    row = await store.get_work_item("wi-1")
+    assert row["status"] == "pending"
+
+
 # get_pending_approval
 # ---------------------------------------------------------------------------
 

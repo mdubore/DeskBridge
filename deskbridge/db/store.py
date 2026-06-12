@@ -401,18 +401,49 @@ class Store:
         ) as cur:
             return await cur.fetchone()
 
-    async def mark_work_item_cancel_requested(self, id: str) -> None:
+    async def mark_work_item_cancel_requested(self, id: str) -> bool:
         async with self._conn.execute(
             """
             UPDATE work_items
             SET status = 'cancel_requested',
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-            WHERE id = ?
+            WHERE id = ? AND status = 'dispatched'
             """,
             (id,),
-        ):
-            pass
+        ) as cur:
+            updated = cur.rowcount > 0
         await self._conn.commit()
+        return updated
+
+    async def cancel_pending_work_item(self, id: str) -> bool:
+        async with self._conn.execute(
+            """
+            UPDATE work_items
+            SET status = 'cancelled',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ? AND status = 'pending'
+            """,
+            (id,),
+        ) as cur:
+            updated = cur.rowcount > 0
+        await self._conn.commit()
+        return updated
+
+    async def reset_work_item_for_retry(self, id: str) -> bool:
+        async with self._conn.execute(
+            """
+            UPDATE work_items
+            SET status = 'pending',
+                attempt_count = 0,
+                next_retry_at = NULL,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ? AND status IN ('failed', 'cancelled', 'interrupted')
+            """,
+            (id,),
+        ) as cur:
+            updated = cur.rowcount > 0
+        await self._conn.commit()
+        return updated
 
     async def get_pending_approval(self, identity_id: str) -> aiosqlite.Row | None:
         async with self._conn.execute(
