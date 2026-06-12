@@ -267,8 +267,13 @@ async def test_reject_pending_approval_queues_decision(config_file, tmp_path):
     runner = CliRunner()
     result = runner.invoke(cli, ["reject", "appr-1", "--config", str(config_file)])
     assert result.exit_code == 0
+    assert "queued" in result.output.lower()
     row = await _fetch_one(db_path, "SELECT status FROM approvals WHERE id='appr-1'")
     assert row["status"] == "reject_requested"
+    audit = await _fetch_one(
+        db_path, "SELECT id FROM audit_log WHERE event_type='approval_decision_requested'"
+    )
+    assert audit is not None
 
 
 async def test_approve_already_resolved_fails(config_file, tmp_path):
