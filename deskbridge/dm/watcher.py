@@ -4,6 +4,7 @@ import uuid
 import structlog
 
 from deskbridge.db.store import Store
+from deskbridge.dm.approval_resolution import resolve_approval_via_mcp
 from deskbridge.dm.intent import Intent, parse
 from deskbridge.mcp.client import McpClient, McpToolError
 from deskbridge.mcp.errors import RoutingDecision
@@ -271,151 +272,14 @@ class DmWatcher:
         session_id: str,
         approved: bool,
     ) -> str:
-        try:
-            result = await self._client.call_tool(
-                "respond_to_approval",
-                {
-                    "session_id": session_id,
-                    "approval_request_id": mcp_approval_id,
-                    "approved": approved,
-                    "note": None,
-                },
-            )
-            if not (isinstance(result, dict) and result.get("ok") is True):
-                log.error(
-                    "dm_watcher_respond_to_approval_unexpected_response",
-                    identity=self._identity_label,
-                    mcp_approval_id=mcp_approval_id,
-                )
-                return "Failed to record decision — please check logs."
-            returned_id = result.get("approval_request_id")
-            if returned_id != mcp_approval_id:
-                log.error(
-                    "dm_watcher_approval_id_mismatch",
-                    identity=self._identity_label,
-                    sent=mcp_approval_id,
-                    returned=returned_id,
-                )
-                return "Failed to record decision — please check logs."
-            response_status = result.get("status", "")
-            if response_status == "approved":
-                local_status = "approved"
-            elif response_status == "denied":
-                local_status = "rejected"
-            else:
-                log.error(
-                    "dm_watcher_approval_unknown_response_status",
-                    identity=self._identity_label,
-                    status=response_status,
-                    mcp_approval_id=mcp_approval_id,
-                )
-                return "Failed to record decision — please check logs."
-            expected_response_status = "approved" if approved else "denied"
-            if response_status != expected_response_status:
-                log.error(
-                    "dm_watcher_approval_status_mismatch",
-                    identity=self._identity_label,
-                    sent_approved=approved,
-                    response_status=response_status,
-                    mcp_approval_id=mcp_approval_id,
-                )
-                return "Failed to record decision — please check logs."
-            await self._store.resolve_approval(row["id"], local_status)
-            try:
-                await self._store.log_audit(
-                    id=str(uuid.uuid4()),
-                    event_type="approval_resolved",
-                    identity_id=self._account_id,
-                    work_item_id=row["work_item_id"],
-                    payload_json=json.dumps({"approval_id": row["id"], "resolution": local_status}),
-                )
-            except Exception:
-                log.warning("audit_log_failed", event_type="approval_resolved")
-            log.info(
-                "dm_watcher_approval_resolved",
-                identity=self._identity_label,
-                mcp_approval_id=mcp_approval_id,
-            )
-            return "Approved." if approved else "Denied."
-        except McpToolError as e:
-            cat = e.category
-            if cat == "approval_already_resolved":
-                data_status = (e.data or {}).get("status", "")
-                if data_status == "approved":
-                    local_status = "approved"
-                elif data_status == "denied":
-                    local_status = "rejected"
-                else:
-                    log.error(
-                        "dm_watcher_approval_already_resolved_unknown_status",
-                        identity=self._identity_label,
-                        data_status=data_status,
-                        mcp_approval_id=mcp_approval_id,
-                    )
-                    return "Failed to record decision — please check logs."
-                await self._store.resolve_approval(row["id"], local_status)
-                try:
-                    await self._store.log_audit(
-                        id=str(uuid.uuid4()),
-                        event_type="approval_resolved",
-                        identity_id=self._account_id,
-                        work_item_id=row["work_item_id"],
-                        payload_json=json.dumps({"approval_id": row["id"], "resolution": local_status}),
-                    )
-                except Exception:
-                    log.warning("audit_log_failed", event_type="approval_resolved")
-                log.warning(
-                    "dm_watcher_approval_already_resolved",
-                    identity=self._identity_label,
-                    mcp_approval_id=mcp_approval_id,
-                )
-                return "Decision received, but the approval was already resolved or has expired."
-            elif cat == "approval_expired":
-                await self._store.resolve_approval(row["id"], "rejected")
-                try:
-                    await self._store.log_audit(
-                        id=str(uuid.uuid4()),
-                        event_type="approval_resolved",
-                        identity_id=self._account_id,
-                        work_item_id=row["work_item_id"],
-                        payload_json=json.dumps({"approval_id": row["id"], "resolution": "rejected"}),
-                    )
-                except Exception:
-                    log.warning("audit_log_failed", event_type="approval_resolved")
-                log.warning(
-                    "dm_watcher_approval_expired",
-                    identity=self._identity_label,
-                    mcp_approval_id=mcp_approval_id,
-                )
-                return "Decision received, but the approval was already resolved or has expired."
-            elif cat == "approval_not_found":
-                await self._store.resolve_approval(row["id"], "rejected")
-                try:
-                    await self._store.log_audit(
-                        id=str(uuid.uuid4()),
-                        event_type="approval_resolved",
-                        identity_id=self._account_id,
-                        work_item_id=row["work_item_id"],
-                        payload_json=json.dumps({"approval_id": row["id"], "resolution": "rejected"}),
-                    )
-                except Exception:
-                    log.warning("audit_log_failed", event_type="approval_resolved")
-                log.error(
-                    "dm_watcher_approval_not_found",
-                    identity=self._identity_label,
-                    mcp_approval_id=mcp_approval_id,
-                )
-                return "Decision received, but the approval was already resolved or has expired."
-            else:
-                log.error(
-                    "dm_watcher_resolve_approval_error",
-                    identity=self._identity_label,
-                    message=e.mcp_error.message,
-                )
-                return "Failed to record decision — please check logs."
-        except Exception:
-            log.exception(
-                "dm_watcher_resolve_approval_error",
-                identity=self._identity_label,
-            )
-            return "Failed to record decision — please check logs."
+        _resolved, reply = await resolve_approval_via_mcp(
+            store=self._store,
+            client=self._client,
+            identity_label=self._identity_label,
+            account_id=self._account_id,
+            row=row,
+            mcp_approval_id=mcp_approval_id,
+            session_id=session_id,
+            approved=approved,
+        )
+        return reply
