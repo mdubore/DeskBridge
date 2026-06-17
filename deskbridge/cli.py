@@ -351,10 +351,11 @@ async def _request_approval_decision(
             },
         )
         verb = "Approval" if approved else "Rejection"
-        return True, (
-            f"{verb} queued for {approval_id} — "
-            "the supervisor will forward the decision to MCP."
-        )
+        if row["mcp_approval_id"]:
+            suffix = "the supervisor will forward the decision to MCP."
+        else:
+            suffix = "the supervisor will resolve this locally (no MCP approval associated)."
+        return True, f"{verb} queued for {approval_id} — {suffix}"
 
 
 @cli.command()

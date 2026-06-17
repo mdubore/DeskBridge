@@ -337,3 +337,33 @@ async def test_status_lists_retryable_ids(config_file, tmp_path):
     assert "wi-1" in result.output
     assert "wi-2" in result.output
     assert "retry" in result.output.lower()
+
+
+async def test_approve_local_only_approval_copy_mentions_locally(config_file, tmp_path):
+    """Approvals without mcp_approval_id are resolved locally — copy should say so."""
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO approvals (id, identity_id, action_description, status) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'pending')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["approve", "appr-1", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "locally" in result.output.lower()
+    assert "forward" not in result.output.lower()
+
+
+async def test_approve_mcp_correlated_approval_copy_mentions_mcp(config_file, tmp_path):
+    """Approvals with mcp_approval_id are forwarded to MCP — copy should say so."""
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO approvals (id, identity_id, action_description, status, mcp_approval_id) "
+        "VALUES ('appr-1', 'acc-alice', 'pay invoice', 'pending', 'req-ext-1')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["approve", "appr-1", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "forward" in result.output.lower() and "mcp" in result.output.lower()
+    assert "locally" not in result.output.lower()
