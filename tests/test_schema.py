@@ -63,3 +63,11 @@ async def test_foreign_keys_enforced(db):
             ("p1", "test", "/tmp", "nonexistent-account-id"),
         )
         await db.commit()
+
+
+async def test_work_items_status_index_exists(db):
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='work_items_status_created_at'"
+    )
+    row = await cursor.fetchone()
+    assert row is not None

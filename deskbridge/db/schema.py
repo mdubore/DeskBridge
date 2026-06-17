@@ -142,6 +142,7 @@ _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN openclaw_agent_id TEXT",
     "ALTER TABLE work_items ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE work_items ADD COLUMN next_retry_at TEXT",
+    "CREATE INDEX IF NOT EXISTS work_items_status_created_at ON work_items (status, created_at)",
 ]
 
 
