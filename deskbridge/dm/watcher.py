@@ -4,7 +4,7 @@ import uuid
 import structlog
 
 from deskbridge.db.store import Store
-from deskbridge.dm.approval_resolution import resolve_approval_via_mcp
+from deskbridge.dm.approval_resolution import resolve_and_audit, resolve_approval_via_mcp
 from deskbridge.dm.intent import Intent, parse
 from deskbridge.mcp.client import McpClient, McpToolError
 from deskbridge.mcp.errors import RoutingDecision
@@ -208,17 +208,7 @@ class DmWatcher:
                         session_id=session_id, approved=True,
                     )
                 else:
-                    await self._store.resolve_approval(row["id"], "approved")
-                    try:
-                        await self._store.log_audit(
-                            id=str(uuid.uuid4()),
-                            event_type="approval_resolved",
-                            identity_id=self._account_id,
-                            work_item_id=row["work_item_id"],
-                            payload_json=json.dumps({"approval_id": row["id"], "resolution": "approved"}),
-                        )
-                    except Exception:
-                        log.warning("audit_log_failed", event_type="approval_resolved")
+                    await resolve_and_audit(self._store, self._account_id, row, "approved")
                     reply = "Approved."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),
@@ -243,17 +233,7 @@ class DmWatcher:
                         session_id=session_id, approved=False,
                     )
                 else:
-                    await self._store.resolve_approval(row["id"], "rejected")
-                    try:
-                        await self._store.log_audit(
-                            id=str(uuid.uuid4()),
-                            event_type="approval_resolved",
-                            identity_id=self._account_id,
-                            work_item_id=row["work_item_id"],
-                            payload_json=json.dumps({"approval_id": row["id"], "resolution": "rejected"}),
-                        )
-                    except Exception:
-                        log.warning("audit_log_failed", event_type="approval_resolved")
+                    await resolve_and_audit(self._store, self._account_id, row, "rejected")
                     reply = "Rejected."
             await self._store.insert_outbox_item(
                 str(uuid.uuid4()),

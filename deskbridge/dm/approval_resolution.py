@@ -11,17 +11,24 @@ _FAILURE_REPLY = "Failed to record decision — please check logs."
 _STALE_REPLY = "Decision received, but the approval was already resolved or has expired."
 
 
-async def _resolve_and_audit(
-    store: Store, account_id: str, row: dict, local_status: str
+async def resolve_and_audit(
+    store: Store, account_id: str, row: dict, local_status: str,
+    *, via: str | None = None,
 ) -> None:
-    await store.resolve_approval(row["id"], local_status)
+    updated = await store.resolve_approval(row["id"], local_status)
+    if not updated:
+        log.debug("approval_already_resolved_skipping_audit", approval_id=row["id"])
+        return
+    payload: dict = {"approval_id": row["id"], "resolution": local_status}
+    if via is not None:
+        payload["via"] = via
     try:
         await store.log_audit(
             id=str(uuid.uuid4()),
             event_type="approval_resolved",
             identity_id=account_id,
             work_item_id=row["work_item_id"],
-            payload_json=json.dumps({"approval_id": row["id"], "resolution": local_status}),
+            payload_json=json.dumps(payload),
         )
     except Exception:
         log.warning("audit_log_failed", event_type="approval_resolved")
@@ -92,7 +99,7 @@ async def resolve_approval_via_mcp(
                 mcp_approval_id=mcp_approval_id,
             )
             return False, _FAILURE_REPLY
-        await _resolve_and_audit(store, account_id, row, local_status)
+        await resolve_and_audit(store, account_id, row, local_status)
         log.info(
             "approval_resolution_resolved",
             identity=identity_label,
@@ -115,7 +122,7 @@ async def resolve_approval_via_mcp(
                     mcp_approval_id=mcp_approval_id,
                 )
                 return False, _FAILURE_REPLY
-            await _resolve_and_audit(store, account_id, row, local_status)
+            await resolve_and_audit(store, account_id, row, local_status)
             log.warning(
                 "approval_resolution_already_resolved",
                 identity=identity_label,
@@ -123,7 +130,7 @@ async def resolve_approval_via_mcp(
             )
             return True, _STALE_REPLY
         elif cat == "approval_expired":
-            await _resolve_and_audit(store, account_id, row, "rejected")
+            await resolve_and_audit(store, account_id, row, "rejected")
             log.warning(
                 "approval_resolution_expired",
                 identity=identity_label,
@@ -131,7 +138,7 @@ async def resolve_approval_via_mcp(
             )
             return True, _STALE_REPLY
         elif cat == "approval_not_found":
-            await _resolve_and_audit(store, account_id, row, "rejected")
+            await resolve_and_audit(store, account_id, row, "rejected")
             log.error(
                 "approval_resolution_not_found",
                 identity=identity_label,

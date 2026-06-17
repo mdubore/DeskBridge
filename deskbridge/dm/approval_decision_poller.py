@@ -1,10 +1,8 @@
 import asyncio
-import json
-import uuid
 import structlog
 
 from deskbridge.db.store import Store
-from deskbridge.dm.approval_resolution import resolve_approval_via_mcp
+from deskbridge.dm.approval_resolution import resolve_and_audit, resolve_approval_via_mcp
 from deskbridge.mcp.client import McpClient
 from deskbridge.mcp.session import SessionBroker
 
@@ -82,21 +80,9 @@ class ApprovalDecisionPoller:
                         approval_id=row["id"],
                     )
             else:
-                await self._store.resolve_approval(row["id"], local_status)
-                try:
-                    await self._store.log_audit(
-                        id=str(uuid.uuid4()),
-                        event_type="approval_resolved",
-                        identity_id=self._account_id,
-                        work_item_id=row["work_item_id"],
-                        payload_json=json.dumps({
-                            "approval_id": row["id"],
-                            "resolution": local_status,
-                            "via": "cli",
-                        }),
-                    )
-                except Exception:
-                    log.warning("audit_log_failed", event_type="approval_resolved")
+                await resolve_and_audit(
+                    self._store, self._account_id, row, local_status, via="cli"
+                )
                 log.info(
                     "approval_decision_poller_resolved_locally",
                     identity=self._identity_label,
