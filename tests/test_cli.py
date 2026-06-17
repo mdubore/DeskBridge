@@ -367,3 +367,38 @@ async def test_approve_mcp_correlated_approval_copy_mentions_mcp(config_file, tm
     assert result.exit_code == 0
     assert "forward" in result.output.lower() and "mcp" in result.output.lower()
     assert "locally" not in result.output.lower()
+
+
+async def test_cancel_missing_item_failure_goes_to_stderr(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(db_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["cancel", "wi-missing", "--config", str(config_file)])
+    assert result.exit_code == 1
+    assert "not found" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+async def test_retry_wrong_status_failure_goes_to_stderr(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, "
+        "idempotency_key, summary) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'pending', 'k1', 'fix the bug')",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["retry", "wi-1", "--config", str(config_file)])
+    assert result.exit_code == 1
+    assert "only failed" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+async def test_approve_missing_approval_failure_goes_to_stderr(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(db_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["approve", "appr-missing", "--config", str(config_file)])
+    assert result.exit_code == 1
+    assert "not found" in result.stderr.lower()
+    assert result.stdout == ""
