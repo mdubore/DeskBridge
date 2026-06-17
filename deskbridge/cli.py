@@ -362,7 +362,7 @@ async def _request_approval_decision(
 @click.argument("approval_id")
 @_CONFIG_OPTION
 def approve(approval_id: str, config_path: str):
-    """Approve a pending approval request (the supervisor forwards it to MCP)."""
+    """Approve a pending approval request."""
     db_path = _require_db(config_path)
     ok, message = _run_async(_request_approval_decision(db_path, approval_id, approved=True))
     click.echo(message, err=not ok)
@@ -374,7 +374,7 @@ def approve(approval_id: str, config_path: str):
 @click.argument("approval_id")
 @_CONFIG_OPTION
 def reject(approval_id: str, config_path: str):
-    """Reject a pending approval request (the supervisor forwards it to MCP)."""
+    """Reject a pending approval request."""
     db_path = _require_db(config_path)
     ok, message = _run_async(_request_approval_decision(db_path, approval_id, approved=False))
     click.echo(message, err=not ok)
