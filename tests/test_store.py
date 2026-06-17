@@ -733,6 +733,44 @@ async def test_resolve_approval_rejected(store: Store, db_conn):
     assert row["status"] == "rejected"
 
 
+async def test_resolve_approval_returns_true_for_pending(store, db_conn):
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X"
+    )
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, "
+        "status, idempotency_key) VALUES ('wi-1', 'dm', 's', 'acc-alice', 'pending', 'k1')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status) "
+        "VALUES ('appr-1', 'wi-1', 'do stuff', 'pending')"
+    )
+    await db_conn.commit()
+    result = await store.resolve_approval("appr-1", "approved")
+    assert result is True
+    row = await store.get_approval("appr-1")
+    assert row["status"] == "approved"
+
+
+async def test_resolve_approval_returns_false_if_already_resolved(store, db_conn):
+    await store.upsert_account(
+        id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X"
+    )
+    await db_conn.execute(
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, "
+        "status, idempotency_key) VALUES ('wi-2', 'dm', 's', 'acc-alice', 'pending', 'k2')"
+    )
+    await db_conn.execute(
+        "INSERT INTO approvals (id, work_item_id, action_description, status, resolved_at) "
+        "VALUES ('appr-2', 'wi-2', 'do stuff', 'approved', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+    )
+    await db_conn.commit()
+    result = await store.resolve_approval("appr-2", "rejected")
+    assert result is False
+    row = await store.get_approval("appr-2")
+    assert row["status"] == "approved"
+
+
 # request_approval_decision / get_requested_approval_decisions
 # ---------------------------------------------------------------------------
 

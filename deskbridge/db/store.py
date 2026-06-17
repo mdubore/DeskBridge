@@ -458,18 +458,19 @@ class Store:
         ) as cur:
             return await cur.fetchone()
 
-    async def resolve_approval(self, id: str, status: str) -> None:
+    async def resolve_approval(self, id: str, status: str) -> bool:
         async with self._conn.execute(
             """
             UPDATE approvals
             SET status = ?,
                 resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-            WHERE id = ?
+            WHERE id = ? AND status NOT IN ('approved', 'rejected')
             """,
             (status, id),
-        ):
-            pass
+        ) as cur:
+            affected = cur.rowcount
         await self._conn.commit()
+        return affected > 0
 
     async def request_approval_decision(self, id: str, decision: str) -> bool:
         if decision not in ("approve_requested", "reject_requested"):
