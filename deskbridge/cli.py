@@ -140,6 +140,22 @@ async def _show_status(db_path: Path) -> None:
                 f"  {item['id']}  {item['status']:<17}"
                 f" attempts={item['attempt_count']}  \"{summary}\""
             )
+        async with conn.execute(
+            """
+            SELECT id, status, attempt_count, summary FROM work_items
+            WHERE status IN ('failed', 'cancelled', 'interrupted')
+            ORDER BY created_at DESC LIMIT 10
+            """
+        ) as cursor:
+            retryable_items = await cursor.fetchall()
+        if retryable_items:
+            click.echo("  --- retry targets ---")
+            for item in retryable_items:
+                summary = (item["summary"] or "")[:40]
+                click.echo(
+                    f"  {item['id']}  {item['status']:<17}"
+                    f" attempts={item['attempt_count']}  \"{summary}\""
+                )
 
         # Approvals
         async with conn.execute(

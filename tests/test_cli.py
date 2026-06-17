@@ -318,3 +318,22 @@ async def test_approve_missing_approval_fails(config_file, tmp_path):
     result = runner.invoke(cli, ["approve", "appr-missing", "--config", str(config_file)])
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
+
+
+async def test_status_lists_retryable_ids(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(
+        db_path,
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, "
+        "idempotency_key, summary, attempt_count) "
+        "VALUES ('wi-1', 'dm', 'msg-1', 'acc-alice', 'failed', 'k1', 'fix the bug', 3)",
+        "INSERT INTO work_items (id, source_type, source_id, identity_id, status, "
+        "idempotency_key, summary, attempt_count) "
+        "VALUES ('wi-2', 'dm', 'msg-2', 'acc-alice', 'cancelled', 'k2', 'write tests', 1)",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["status", "--config", str(config_file)])
+    assert result.exit_code == 0
+    assert "wi-1" in result.output
+    assert "wi-2" in result.output
+    assert "retry" in result.output.lower()
