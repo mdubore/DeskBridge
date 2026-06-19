@@ -85,6 +85,30 @@ def test_passphrase_ref_env_missing_raises(tmp_path, monkeypatch):
         config.identities[0].resolve_passphrase()
 
 
+def test_identity_config_passphrase_env_var_returns_env_name():
+    from deskbridge.config import IdentityConfig
+    identity = IdentityConfig(
+        label="alice", npub="npub1alice", passphrase_ref="env:ALICE_PASSPHRASE"
+    )
+    assert identity.passphrase_env_var() == "ALICE_PASSPHRASE"
+
+
+def test_identity_config_passphrase_env_var_ignores_keyring_refs():
+    from deskbridge.config import IdentityConfig
+    identity = IdentityConfig(
+        label="alice",
+        npub="npub1alice",
+        passphrase_ref="keyring:nostrdesk:alice",
+    )
+    assert identity.passphrase_env_var() is None
+
+
+def test_identity_config_passphrase_env_var_ignores_empty_env_ref():
+    from deskbridge.config import IdentityConfig
+    identity = IdentityConfig(label="alice", npub="npub1alice", passphrase_ref="env:")
+    assert identity.passphrase_env_var() is None
+
+
 def test_passphrase_ref_invalid_format_raises():
     from deskbridge.config import IdentityConfig
     identity = IdentityConfig(
