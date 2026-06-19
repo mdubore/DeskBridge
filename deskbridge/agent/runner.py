@@ -1,7 +1,9 @@
 import asyncio
 import collections
 import json
+import os
 import structlog
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -20,9 +22,25 @@ _APPROVAL_INSTRUCTION = (
     "If retrying still fails, report the error clearly and stop.\n\n"
 )
 
+_DEFAULT_BLOCKED_AGENT_ENV_VARS = frozenset({
+    "NOSTRDESK_PASSPHRASE",
+    "NOSTRDESK_PUBKEY_HEX",
+    "NOSTR_PRIVATE_KEY",
+    "NSEC",
+})
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _build_agent_env(blocked_env_vars: Iterable[str] = ()) -> dict[str, str]:
+    blocked_names = _DEFAULT_BLOCKED_AGENT_ENV_VARS | set(blocked_env_vars)
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in blocked_names
+    }
 
 
 class AgentRunner:
@@ -36,6 +54,7 @@ class AgentRunner:
         broker: SessionBroker,
         timeout_secs: float = 600.0,
         heartbeat_interval_secs: float = 30.0,
+        blocked_env_vars: Iterable[str] = (),
     ) -> None:
         self._work_item = work_item
         self._project = project
@@ -45,6 +64,7 @@ class AgentRunner:
         self._broker = broker
         self._timeout_secs = timeout_secs
         self._heartbeat_interval_secs = heartbeat_interval_secs
+        self._blocked_env_vars = tuple(blocked_env_vars)
 
     async def run(self) -> None:
         try:
@@ -113,6 +133,7 @@ class AgentRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=project.repo_path,
+            env=_build_agent_env(self._blocked_env_vars),
         )
 
         # 4. Start concurrent tasks

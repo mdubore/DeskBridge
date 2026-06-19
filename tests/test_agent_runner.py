@@ -53,7 +53,8 @@ def make_proc(*, returncode=0, stdout_lines=None):
 
 
 def make_runner(work_item, project=PROJ, *, store=None, broker=None, client=None,
-                timeout_secs=5.0, heartbeat_interval_secs=9999.0):
+                timeout_secs=5.0, heartbeat_interval_secs=9999.0,
+                blocked_env_vars=()):
     return AgentRunner(
         work_item=work_item,
         project=project,
@@ -63,7 +64,59 @@ def make_runner(work_item, project=PROJ, *, store=None, broker=None, client=None
         broker=broker or make_broker(),
         timeout_secs=timeout_secs,
         heartbeat_interval_secs=heartbeat_interval_secs,
+        blocked_env_vars=blocked_env_vars,
     )
+
+
+async def test_runner_does_not_inherit_blocked_secret_env_vars(monkeypatch):
+    monkeypatch.setenv("ALICE_PASSPHRASE", "secret-passphrase")
+    monkeypatch.setenv("OPENAI_API_KEY", "provider-key")
+    work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
+                     summary="fix bug", payload_json="{}")
+    store = make_store()
+    proc = make_proc(returncode=0)
+
+    captured_kwargs = {}
+
+    def capture_exec(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capture_exec):
+        runner = make_runner(
+            work_item,
+            store=store,
+            blocked_env_vars=("ALICE_PASSPHRASE",),
+        )
+        await runner.run()
+
+    env = captured_kwargs["env"]
+    assert "ALICE_PASSPHRASE" not in env
+    assert env["OPENAI_API_KEY"] == "provider-key"
+    assert captured_kwargs["cwd"] == "/repo"
+
+
+async def test_runner_strips_nostrdesk_auto_unlock_env_by_default(monkeypatch):
+    monkeypatch.setenv("NOSTRDESK_PASSPHRASE", "secret-passphrase")
+    monkeypatch.setenv("NOSTRDESK_PUBKEY_HEX", "pubkey")
+    work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
+                     summary="fix bug", payload_json="{}")
+    store = make_store()
+    proc = make_proc(returncode=0)
+
+    captured_kwargs = {}
+
+    def capture_exec(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capture_exec):
+        runner = make_runner(work_item, store=store)
+        await runner.run()
+
+    env = captured_kwargs["env"]
+    assert "NOSTRDESK_PASSPHRASE" not in env
+    assert "NOSTRDESK_PUBKEY_HEX" not in env
 
 
 async def test_runner_success_marks_done_and_writes_outbox():
