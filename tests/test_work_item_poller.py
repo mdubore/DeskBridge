@@ -13,11 +13,11 @@ PROJ = ProjectConfig(
 )
 
 
-def make_config(projects=None):
+def make_config(projects=None, identities=None):
     return DeskBridgeConfig(
         supervisor=SupervisorConfig(db_path="/tmp/test.db"),
         mcp=McpConfig(command="nostrdesk-mcp"),
-        identities=[ALICE],
+        identities=identities if identities is not None else [ALICE],
         projects=projects if projects is not None else [PROJ],
     )
 
@@ -88,7 +88,46 @@ async def test_poller_pending_item_claimed_and_runner_spawned():
         store=store,
         client=ANY,
         broker=ANY,
+        blocked_env_vars={"X"},
     )
+
+
+async def test_poller_passes_all_identity_passphrase_env_vars_to_runner():
+    shutdown = asyncio.Event()
+    project_row = _row(id="proj-1")
+    work_item = _row(id="wi-1", source_type="dm", source_id="msg-1",
+                     summary="fix bug", payload_json="{}", attempt_count=0)
+    store = make_store(project_row=project_row, pending_items=[work_item])
+    alice = IdentityConfig(
+        label="alice", npub="npub1alice", passphrase_ref="env:ALICE_PASSPHRASE"
+    )
+    bob = IdentityConfig(
+        label="bob", npub="npub1bob", passphrase_ref="env:BOB_PASSPHRASE"
+    )
+    carol = IdentityConfig(
+        label="carol", npub="npub1carol", passphrase_ref="keyring:nostrdesk:carol"
+    )
+
+    async def fake_run():
+        shutdown.set()
+
+    with patch("deskbridge.agent.poller.AgentRunner") as MockRunner:
+        MockRunner.return_value.run = AsyncMock(side_effect=fake_run)
+        poller = WorkItemPoller(
+            identity_label="alice",
+            store=store,
+            client=MagicMock(),
+            broker=MagicMock(),
+            config=make_config(identities=[alice, bob, carol]),
+            shutdown_event=shutdown,
+            poll_interval_secs=0.01,
+        )
+        await poller.run()
+
+    assert MockRunner.call_args.kwargs["blocked_env_vars"] == {
+        "ALICE_PASSPHRASE",
+        "BOB_PASSPHRASE",
+    }
 
 
 async def test_poller_skips_when_active_run_in_flight():

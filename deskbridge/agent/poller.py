@@ -19,6 +19,14 @@ def _iso_offset(seconds: int) -> str:
     )
 
 
+def _configured_passphrase_env_vars(config: DeskBridgeConfig) -> set[str]:
+    return {
+        env_var
+        for identity in config.identities
+        if (env_var := identity.passphrase_env_var())
+    }
+
+
 class WorkItemPoller:
     def __init__(
         self,
@@ -42,6 +50,7 @@ class WorkItemPoller:
         self._poll_interval_secs = poll_interval_secs
         self._kanban_column_in_progress = kanban_column_in_progress
         self._kanban_column_done = kanban_column_done
+        self._blocked_agent_env_vars = _configured_passphrase_env_vars(config)
         self._active_run_task: asyncio.Task | None = None
         self._active_work_item_id: str | None = None
         self._active_project_cfg: ProjectConfig | None = None
@@ -258,6 +267,7 @@ class WorkItemPoller:
                 store=self._store,
                 client=self._client,
                 broker=self._broker,
+                blocked_env_vars=self._blocked_agent_env_vars,
             )
             self._active_run_task = asyncio.create_task(
                 runner.run(), name=f"agent_run_{row['id']}"
