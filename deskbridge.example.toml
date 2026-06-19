@@ -15,9 +15,9 @@ startup_timeout_secs = 30
 label = "alice"
 npub = "npub1examplealice000000000000000000000000000000000000000000000000"
 # passphrase_ref formats:
-#   env:VAR_NAME        — read from environment variable
-#   keyring:service:key — read from OS keychain
-passphrase_ref = "env:ALICE_PASSPHRASE"
+#   keyring:service:key — preferred; read from OS keychain
+#   env:VAR_NAME        — supported; agent subprocesses scrub configured passphrase env vars
+passphrase_ref = "keyring:nostrdesk:alice"
 
 [[projects]]
 id = "proj-myproject"

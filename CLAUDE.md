@@ -49,6 +49,7 @@ There is no linter or formatter configured. Tests use `asyncio_mode = "auto"` �
 - **Audit events** (`audit_log` table, via `store.log_audit`) are written best-effort — wrapped in try/except that logs a warning, never failing the operation.
 - **Approvals are never auto-resolved.** `approval_required` MCP errors are captured with their correlation id into `approvals` and escalated to the operator via DM; agents are instructed (see `_APPROVAL_INSTRUCTION` in `runner.py`) to wait and retry. Operator decisions can also be queued from the CLI (`approve`/`reject` set `approve_requested`/`reject_requested` statuses); the supervisor's `ApprovalDecisionPoller` forwards them to MCP — the CLI process never talks to MCP.
 - **Secrets stay out of config:** `passphrase_ref` is an indirection (`env:VAR` or `keyring:service:key`) resolved at unlock time by `config.py`.
+- **Agent subprocess environments are sanitized.** `AgentRunner` passes an explicit `env=` to subprocesses and removes NostrDesk auto-unlock variables plus every env var named by configured `passphrase_ref = "env:..."` entries. Do not broaden this to strip generic provider keys; agent CLIs may need model API credentials.
 
 ### Config
 
