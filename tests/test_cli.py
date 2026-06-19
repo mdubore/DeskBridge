@@ -402,3 +402,13 @@ async def test_approve_missing_approval_failure_goes_to_stderr(config_file, tmp_
     assert result.exit_code == 1
     assert "not found" in result.stderr.lower()
     assert result.stdout == ""
+
+
+async def test_reject_missing_approval_failure_goes_to_stderr(config_file, tmp_path):
+    db_path = tmp_path / "test.db"
+    await _seed(db_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["reject", "appr-missing", "--config", str(config_file)])
+    assert result.exit_code == 1
+    assert "not found" in result.stderr.lower()
+    assert result.stdout == ""
