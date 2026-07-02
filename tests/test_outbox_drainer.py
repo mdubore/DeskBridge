@@ -160,7 +160,7 @@ async def test_outbox_drainer_exhausted_row_not_fetched(store, db_conn):
     mock_client.call_tool.assert_not_awaited()
 
 
-async def test_outbox_drainer_skips_no_dest_pubkey(store, db_conn):
+async def test_outbox_drainer_delivers_group_message(store, db_conn):
     await store.upsert_account(id="acc-alice", npub="npub1alice", label="alice", passphrase_ref="env:X")
     await db_conn.execute(
         "INSERT INTO outbox (id, identity_id, dest_group_id, message_text, idempotency_key) "
@@ -168,22 +168,38 @@ async def test_outbox_drainer_skips_no_dest_pubkey(store, db_conn):
     )
     await db_conn.commit()
 
-    mock_client = MagicMock()
-    mock_client.call_tool = AsyncMock()
-    mock_broker = MagicMock()
-    mock_broker.get_session_id = AsyncMock(return_value="sess-123")
     shutdown_event = asyncio.Event()
-    shutdown_event.set()
-    drainer = OutboxDrainer(
-        store=store,
-        client=mock_client,
-        broker=mock_broker,
-        identities=[ALICE],
+
+    async def send_and_stop(tool_name, arguments):
+        shutdown_event.set()
+        return {"id": "group-msg-1"}
+
+    send_mock = AsyncMock(side_effect=send_and_stop)
+    drainer, _ = make_drainer(
+        store,
+        send_dm_mock=send_mock,
         shutdown_event=shutdown_event,
-        drain_interval_secs=0.01,
     )
-    await drainer.run()
-    mock_client.call_tool.assert_not_awaited()
+
+    async def stop_if_not_delivered():
+        await asyncio.sleep(0.05)
+        shutdown_event.set()
+
+    await asyncio.gather(drainer.run(), stop_if_not_delivered())
+
+    send_mock.assert_awaited_once_with(
+        "send_encrypted_message",
+        {
+            "session_id": "sess-123",
+            "group_id": "grp-1",
+            "content": "hello",
+            "idempotency_key": "k1",
+        },
+    )
+    async with db_conn.execute("SELECT delivery_status, delivery_attempts FROM outbox WHERE id='ob-1'") as cur:
+        row = await cur.fetchone()
+    assert row["delivery_status"] == "delivered"
+    assert row["delivery_attempts"] == 1
 
 
 async def test_outbox_drainer_skips_unknown_identity(store, db_conn):

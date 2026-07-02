@@ -48,8 +48,10 @@ class OutboxDrainer:
         log.info("outbox_drainer_stopped")
 
     async def _drain_row(self, row) -> None:
-        if not row["dest_pubkey"]:
-            log.debug("outbox_drainer_skip_no_dest_pubkey", id=row["id"])
+        dest_pubkey = row["dest_pubkey"]
+        dest_group_id = row["dest_group_id"]
+        if not dest_pubkey and not dest_group_id:
+            log.debug("outbox_drainer_skip_no_destination", id=row["id"])
             return
 
         label = self._account_to_label.get(row["identity_id"])
@@ -66,16 +68,25 @@ class OutboxDrainer:
             log.debug("outbox_drainer_no_session", id=row["id"], identity=label)
             return
 
+        if dest_pubkey:
+            tool_name = "send_dm"
+            arguments = {
+                "session_id": session_id,
+                "recipient_pubkey": dest_pubkey,
+                "content": row["message_text"],
+                "idempotency_key": row["idempotency_key"],
+            }
+        else:
+            tool_name = "send_encrypted_message"
+            arguments = {
+                "session_id": session_id,
+                "group_id": dest_group_id,
+                "content": row["message_text"],
+                "idempotency_key": row["idempotency_key"],
+            }
+
         try:
-            result = await self._client.call_tool(
-                "send_dm",
-                {
-                    "session_id": session_id,
-                    "recipient_pubkey": row["dest_pubkey"],
-                    "content": row["message_text"],
-                    "idempotency_key": row["idempotency_key"],
-                },
-            )
+            result = await self._client.call_tool(tool_name, arguments)
             await self._store.update_outbox_delivery(
                 row["id"], "delivered", json.dumps(result)
             )
@@ -87,7 +98,8 @@ class OutboxDrainer:
                     identity_id=row["identity_id"],
                     payload_json=json.dumps({
                         "outbox_id": row["id"],
-                        "dest_pubkey": row["dest_pubkey"],
+                        "dest_pubkey": dest_pubkey,
+                        "dest_group_id": dest_group_id,
                     }),
                 )
             except Exception:
